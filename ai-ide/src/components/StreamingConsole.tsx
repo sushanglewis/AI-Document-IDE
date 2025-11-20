@@ -1,5 +1,6 @@
 import React from 'react';
-import { Badge } from './ui/badge';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { cn } from '../lib/utils';
 import { AgentStep } from '../lib/api';
 
@@ -16,13 +17,15 @@ interface StreamingConsoleProps {
     stepId?: string;
     metadata?: any;
   }>;
+  onCollapse?: () => void;
 }
 
 export const StreamingConsole: React.FC<StreamingConsoleProps> = ({ 
   className, 
   steps, 
   isStreaming = false,
-  messages = []
+  messages = [],
+  onCollapse
 }) => {
   type ConsoleMessageItem = {
     id: string;
@@ -67,25 +70,28 @@ export const StreamingConsole: React.FC<StreamingConsoleProps> = ({
     return combined.sort((a, b) => new Date(a.timestamp as any).getTime() - new Date(b.timestamp as any).getTime());
   }, [messages, steps]);
 
-  const formatUsage = (usage?: { input_tokens: number; output_tokens: number }) => {
-    if (!usage) return null;
-    return `Tokens: ${usage.input_tokens} → ${usage.output_tokens}`;
-  };
+  // Token usage隐藏，不再显示
 
   return (
     <div className={cn("flex flex-col h-full", className)}>
       <div className="flex items-center justify-between p-4 border-b">
         <div className="flex items-center gap-2">
           <h3 className="text-lg font-semibold">对话记录</h3>
-          {isStreaming && (
-            <Badge variant="secondary" className="animate-pulse">
-              处理中
-            </Badge>
-          )}
         </div>
-        <div className="text-sm text-muted-foreground">
-          {allItems.length > 0 && `${allItems.length} 条消息`}
-          {allItems.length === 0 && '暂无记录'}
+        <div className="flex items-center gap-2">
+          <div className="text-sm text-muted-foreground">
+            {allItems.length > 0 && `${allItems.length} 条消息`}
+            {allItems.length === 0 && '暂无记录'}
+          </div>
+          {onCollapse && (
+            <button
+              onClick={onCollapse}
+              className="p-1 hover:bg-accent rounded-full h-6 w-6 flex items-center justify-center font-sans text-xs"
+              title="折叠对话"
+            >
+              &gt;
+            </button>
+          )}
         </div>
       </div>
 
@@ -94,17 +100,16 @@ export const StreamingConsole: React.FC<StreamingConsoleProps> = ({
         {allItems.length > 0 ? (
           <div className="space-y-3">
             {allItems.map((item) => (
-              <div key={item.id} className={cn(
-                "flex gap-3",
-                item.type === 'user' ? 'justify-end' : 'justify-start'
-              )}>
-                {/* Message Bubble */}
+              <div key={item.id} className={cn("flex gap-3") }>
+                {/* Message Bubble: 全宽 */}
                 <div className={cn(
-                  "max-w-[80%] rounded-lg p-3 shadow-sm",
+                  "w-full rounded-lg p-3 shadow-sm",
                   item.type === 'user' 
-                    ? "bg-primary text-primary-foreground ml-auto" 
+                    ? "bg-primary text-primary-foreground" 
                     : item.type === 'error'
                     ? "bg-destructive/10 text-destructive border border-destructive/20"
+                    : item.type === 'system'
+                    ? "bg-secondary text-secondary-foreground"
                     : "bg-muted border border-border"
                 )}>
                   <div className="flex items-center gap-2 mb-1">
@@ -136,7 +141,13 @@ export const StreamingConsole: React.FC<StreamingConsoleProps> = ({
                     "text-sm whitespace-pre-wrap",
                     item.type === 'user' ? "text-primary-foreground" : "text-foreground"
                   )}>
-                    {item.content}
+                    {item.type === 'agent' ? (
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {item.content}
+                      </ReactMarkdown>
+                    ) : (
+                      item.content
+                    )}
                   </div>
 
                   {/* Thinking indicator */}
@@ -159,15 +170,6 @@ export const StreamingConsole: React.FC<StreamingConsoleProps> = ({
                           <div className="text-sm whitespace-pre-wrap">
                             {item.step.llm_response.content || item.step.llm_response.content_excerpt || ''}
                           </div>
-                          
-                          <div className="flex items-center gap-2 mt-2 text-xs text-muted-foreground">
-                            {item.step.llm_response.finish_reason && (
-                              <Badge variant="outline" size="sm">
-                                {item.step.llm_response.finish_reason}
-                              </Badge>
-                            )}
-                            {formatUsage(item.step.llm_response.usage)}
-                          </div>
                         </div>
                       )}
 
@@ -178,7 +180,7 @@ export const StreamingConsole: React.FC<StreamingConsoleProps> = ({
                           </div>
                           {item.step.tool_calls.map((tool: any, toolIndex: number) => {
                             const serialized = tool && tool.parameters !== undefined 
-                              ? JSON.stringify(tool.parameters, null, 2) 
+                              ? JSON.stringify(tool.parameters, null, 2).replace(/\s*\n\s*/g, ' ') 
                               : '';
                             const preview = typeof serialized === 'string' ? serialized.slice(0, 100) : '';
                             const isLong = typeof serialized === 'string' && serialized.length > 100;
@@ -202,7 +204,7 @@ export const StreamingConsole: React.FC<StreamingConsoleProps> = ({
                           </div>
                           {item.step.tool_results.map((result: any, resultIndex: number) => {
                             const serialized = result && result.result !== undefined 
-                              ? JSON.stringify(result.result, null, 2) 
+                              ? JSON.stringify(result.result, null, 2).replace(/\s*\n\s*/g, ' ') 
                               : '';
                             const preview = typeof serialized === 'string' ? serialized.slice(0, 200) : '';
                             const isLong = typeof serialized === 'string' && serialized.length > 200;

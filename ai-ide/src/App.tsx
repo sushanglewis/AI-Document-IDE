@@ -1,4 +1,5 @@
 import React from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Toaster } from 'sonner';
 import { FileTree } from './components/FileTree';
 import { ChatPanel } from './components/ChatPanel';
@@ -194,6 +195,7 @@ function App() {
         model_base_url: chosen.baseUrl,
         api_key: chosen.apiKey,
         prompt: systemPrompt as any,
+        console_type: 'lakeview',
       });
       
       const newSession: Session = {
@@ -266,8 +268,20 @@ function App() {
             }
             
             if (data.type === 'start') {
-              // Session started, can add a system message if needed
               console.log('Session started:', data.data);
+              const taskText = (data.data && data.data.task) ? String(data.data.task) : message;
+              updateSession(sessionId!, {
+                messages: [
+                  ...(sessions.find(s => s.id === sessionId)?.messages || []),
+                  {
+                    id: 'task_' + Date.now(),
+                    type: 'system' as const,
+                    content: `task: ${taskText}`,
+                    timestamp: new Date(),
+                    sessionId: sessionId!
+                  }
+                ]
+              });
             } else if (data.type === 'step') {
               setCurrentSteps(prev => [...prev, data.data]);
               
@@ -383,9 +397,11 @@ function App() {
               
               // Add tool calls information
               if (data.data.tool_calls && data.data.tool_calls.length > 0) {
-                const toolCallInfo = data.data.tool_calls.map((tool: any) => 
-                  `执行工具: ${tool.name}(${JSON.stringify(tool.parameters).slice(0, 100)}${JSON.stringify(tool.parameters).length > 100 ? '...' : ''})`
-                ).join('\n');
+                const toolCallInfo = data.data.tool_calls.map((tool: any) => {
+                  const serialized = JSON.stringify(tool.parameters || {});
+                  const sanitized = serialized.replace(/\s*\n\s*/g, ' ');
+                  return `执行工具: ${tool.name}(${sanitized.slice(0, 100)}${sanitized.length > 100 ? '...' : ''})`;
+                }).join('\n');
                 
                 stepMessage.push({
                   id: data.data.step_id + '_tools',
@@ -395,6 +411,31 @@ function App() {
                   sessionId: sessionId,
                   stepId: data.data.step_id
                 });
+
+                // Combined summary: name + command + path + tool_result.success
+                const toolCallsArr: any[] = Array.isArray(data.data.tool_calls) ? data.data.tool_calls : [];
+                const toolResultsArr: any[] = Array.isArray(data.data.tool_results) ? data.data.tool_results : [];
+                const resultsByName: Record<string, any> = {};
+                toolResultsArr.forEach((r: any) => { if (r && r.name) resultsByName[r.name] = r; });
+                const summaryLines = toolCallsArr.map((tool: any) => {
+                  const params = (tool && tool.parameters) ? tool.parameters : {};
+                  const cmd = params && (params.command ?? '-');
+                  const p = params && (params.path ?? (params.file_path ?? '-'));
+                  const res = resultsByName[tool?.name || ''] || {};
+                  const succ = (res.success !== undefined) ? String(!!res.success) : (res.error ? 'false' : (res.result !== undefined ? 'true' : 'unknown'));
+                  const line = `${tool?.name || 'unknown'} | command=${cmd} | path=${p} | success=${succ}`;
+                  return line.replace(/\s*\n\s*/g, ' ');
+                }).join('\n');
+                if (summaryLines) {
+                  stepMessage.push({
+                    id: data.data.step_id + '_tool_summary',
+                    type: 'system' as const,
+                    content: summaryLines,
+                    timestamp: new Date(data.data.timestamp),
+                    sessionId: sessionId,
+                    stepId: data.data.step_id
+                  });
+                }
               }
               
               // Add reflection if available
@@ -428,23 +469,51 @@ function App() {
                   messages: [...currentMessages, ...stepMessage]
                 });
               }
-            } else if (data.type === 'completed') {
-              setCurrentSteps(data.data.steps || []);
-              
-              // Add completion summary
-              const completionMessage = {
-                id: 'completion_' + Date.now(),
+          } else if (data.type === 'completed') {
+            setCurrentSteps(data.data.steps || []);
+            
+            // Add completion summary
+            const completionMessage = {
+              id: 'completion_' + Date.now(),
+              type: 'system' as const,
+              content: `✅ 任务完成\n执行时间: ${data.data.execution_time?.toFixed(2)}s\n步骤数: ${data.data.steps_count}\n结果: ${data.data.final_result || '成功'}`,
+              timestamp: new Date(),
+              sessionId: sessionId
+            };
+            
+            const currentMessages = sessions.find(s => s.id === sessionId)?.messages || [];
+            updateSession(sessionId, {
+              messages: [...currentMessages, completionMessage]
+            });
+
+            // Ensure lakeview summary reply exists
+            const lv = data.data.lakeview_summary;
+            const hasLv = !!lv && typeof lv === 'string' && lv.trim().length > 0;
+            if (!hasLv) {
+              const stepNames = (data.data.steps || []).map((st: any) => st.tool_calls?.map((t: any) => t.name).join(', ')).filter(Boolean);
+              const toolsUsed = stepNames.length ? Array.from(new Set(stepNames.join(', ').split(',').map((s: string) => s.trim()).filter(Boolean))).join(', ') : '-';
+              const fallbackLv = `Lakeview: 执行完成。使用工具: ${toolsUsed}。最终结果: ${data.data.final_result || '成功'}`;
+              const lvMsg = {
+                id: 'lakeview_' + Date.now(),
                 type: 'system' as const,
-                content: `✅ 任务完成\n执行时间: ${data.data.execution_time?.toFixed(2)}s\n步骤数: ${data.data.steps_count}\n结果: ${data.data.final_result || '成功'}`,
+                content: fallbackLv,
                 timestamp: new Date(),
                 sessionId: sessionId
               };
-              
-              const currentMessages = sessions.find(s => s.id === sessionId)?.messages || [];
-              updateSession(sessionId, {
-                messages: [...currentMessages, completionMessage]
-              });
+              const msgs2 = (sessions.find(s => s.id === sessionId)?.messages || []).concat([lvMsg]);
+              updateSession(sessionId, { messages: msgs2 });
+            } else {
+              const lvMsg = {
+                id: 'lakeview_' + Date.now(),
+                type: 'system' as const,
+                content: `Lakeview: ${String(lv)}`,
+                timestamp: new Date(),
+                sessionId: sessionId
+              };
+              const msgs2 = (sessions.find(s => s.id === sessionId)?.messages || []).concat([lvMsg]);
+              updateSession(sessionId, { messages: msgs2 });
             }
+          }
           },
           (error) => {
             console.error('Streaming error:', error);
@@ -489,6 +558,7 @@ function App() {
           session_id: sessionId,
           task: message,
           working_dir: workspaceRoot,
+          prompt: systemPrompt as any,
         });
         
         setCurrentSteps(result.steps || []);
@@ -669,17 +739,6 @@ function App() {
         <div className="flex items-center justify-between p-4 border-b bg-background">
           <div className="flex items-center gap-4">
             <h1 className="text-xl font-bold">AI IDE</h1>
-            {/* Layout Toggles */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setLeftCollapsed(v => !v)}
-                className="px-2 py-1 text-xs bg-muted rounded"
-              >{leftCollapsed ? '展开文件' : '折叠文件'}</button>
-              <button
-                onClick={() => setChatCollapsed(v => !v)}
-                className="px-2 py-1 text-xs bg-muted rounded"
-              >{chatCollapsed ? '展开对话' : '折叠对话'}</button>
-            </div>
             
             {/* System Prompt Selection */}
             <div className="flex items-center gap-2">
@@ -720,39 +779,37 @@ function App() {
               >
                 管理模型
               </button>
-              <span className="text-xs text-muted-foreground">当前: {selectedModelName}</span>
             </div>
             
-            {/* Session Info */}
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <span>会话:</span>
-              <span className="font-mono">
-                {currentSessionId ? currentSessionId.substring(0, 8) + '...' : '未创建'}
-              </span>
-              <button 
-                onClick={() => createNewSession()}
-                className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90"
-                disabled={isStreaming}
-              >
-                新建会话
-              </button>
-            </div>
+            {/* Session Info removed */}
           </div>
           
-          <div className="flex items-center gap-2" />
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={() => createNewSession()}
+              className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90"
+              disabled={isStreaming}
+            >
+              新建会话
+            </button>
+          </div>
         </div>
         
         <div className="flex-1 flex overflow-hidden">
-          {/* Sidebar */}
-          <div className="w-64 border-r bg-muted/30 flex flex-col">
-            <FileTree onFileSelect={handleFileSelect} />
-          </div>
-
           {/* Main Content */}
         <div className="flex-1 flex">
           {/* Left: FileTree (collapsible by width) */}
-          <div className={cn(leftCollapsed ? 'w-0' : 'w-64', "border-r bg-muted/30 flex flex-col overflow-hidden")}>
-            <FileTree onFileSelect={handleFileSelect} />
+          <div className={cn(leftCollapsed ? 'w-0' : 'w-64', "border-r bg-muted/30 flex flex-col overflow-hidden relative")}>
+            <FileTree onFileSelect={handleFileSelect} onCollapse={() => setLeftCollapsed(true)} />
+            {!leftCollapsed && (
+              <button
+                onClick={() => setLeftCollapsed(true)}
+                title="折叠文件"
+                className="absolute -right-3 top-2 z-50 bg-background border rounded-full h-6 w-6 flex items-center justify-center shadow"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+            )}
           </div>
 
           {/* Middle: Markdown / Editor */}
@@ -761,7 +818,7 @@ function App() {
           </div>
 
           {/* Right: Chat (collapsible) */}
-          <div className={cn(chatCollapsed ? 'w-0' : 'w-[380px]', "flex flex-col overflow-hidden")}>            
+          <div className={cn(chatCollapsed ? 'w-0' : 'w-[380px]', "flex flex-col overflow-hidden relative")}>            
             {!chatCollapsed && (
               <>
                 <ChatPanel 
@@ -773,12 +830,33 @@ function App() {
                     steps={currentSteps}
                     isStreaming={isStreaming}
                     messages={sessions.find(s => s.id === currentSessionId)?.messages || []}
+                    onCollapse={() => setChatCollapsed(true)}
                   />
                 </div>
               </>
             )}
           </div>
         </div>
+
+        {leftCollapsed && (
+          <button
+            onClick={() => setLeftCollapsed(false)}
+            title="展开文件"
+            className="fixed left-2 top-2 z-50 bg-primary text-primary-foreground rounded-full h-6 w-6 shadow flex items-center justify-center"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+        )}
+
+        {chatCollapsed && (
+          <button
+            onClick={() => setChatCollapsed(false)}
+            title="展开对话"
+            className="fixed right-2 top-2 z-50 bg-primary text-primary-foreground rounded-full h-6 w-6 shadow flex items-center justify-center"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        )}
 
         {isModelModalOpen && (
           <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">

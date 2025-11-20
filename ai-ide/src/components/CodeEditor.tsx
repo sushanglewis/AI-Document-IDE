@@ -146,36 +146,37 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ className }) => {
           ))}
         </div>
         
-        {/* Save button */}
-        {activeFile && (
-          <button
-            onClick={handleSave}
-            disabled={!activeFile.isDirty || isSaving}
-            className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isSaving ? (
-              <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-            ) : (
-              <Save className="h-4 w-4" />
-            )}
-            保存
-          </button>
-        )}
-        {activeFile && (activeFile.path.endsWith('.md') || activeFile.path.endsWith('.markdown')) && (
-          <button
-            onClick={() => setIsPreview(v => !v)}
-            className="ml-2 px-3 py-2 text-sm hover:bg-accent"
-          >
-            {isPreview ? '编辑模式' : '预览模式'}
-          </button>
-        )}
+        <div className="flex items-center gap-2 ml-auto pr-2">
+          {activeFile && (activeFile.path.endsWith('.md') || activeFile.path.endsWith('.markdown')) && (
+            <button
+              onClick={() => setIsPreview(v => !v)}
+              className="px-3 py-2 text-sm hover:bg-accent"
+            >
+              {isPreview ? '编辑模式' : '预览模式'}
+            </button>
+          )}
+          {activeFile && (
+            <button
+              onClick={handleSave}
+              disabled={!activeFile.isDirty || isSaving}
+              className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isSaving ? (
+                <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              保存
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Editor / Markdown Preview */}
       <div className="flex-1">
         {activeFile && (
           isPreview && (activeFile.path.endsWith('.md') || activeFile.path.endsWith('.markdown')) ? (
-            <div className="prose prose-invert max-w-none p-4 overflow-y-auto h-full">
+            <div className="prose prose-invert max-w-none p-4 overflow-y-auto h-full bg-black text-white">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
                 {activeFile.content || ''}
               </ReactMarkdown>
@@ -186,7 +187,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ className }) => {
               language={getLanguage(activeFile.path)}
               value={activeFile.content}
               onChange={handleContentChange}
-              theme="vs-dark"
+              theme="vs"
               options={{
                 minimap: { enabled: true },
                 fontSize: 14,
