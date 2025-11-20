@@ -1,0 +1,31 @@
+model_providers:
+  openrouter:
+    api_key: '123456'
+    provider: openrouter
+    base_url: http://10.0.2.22:9997/v1
+    api_version: null
+models:
+  default_model:
+    model: Qwen3-32B
+    model_provider: openrouter
+    temperature: 0.5
+    top_p: 1.0
+    top_k: 0
+    parallel_tool_calls: true
+    max_retries: 1
+    max_tokens: 4096
+    supports_tool_calling: true
+agents:
+  trae_agent:
+    max_steps: 100
+    model: default_model
+    tools:
+    - bash
+    - str_replace_based_edit_tool
+    - sequentialthinking
+    - task_done
+    enable_lakeview: true
+lakeview:
+  model: default_model
+allow_mcp_servers: []
+mcp_servers: {}

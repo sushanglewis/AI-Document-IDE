@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Document IDE</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com" />
+    <link rel="preconnect" href="https://pandao.github.io" />
+    <link rel="stylesheet" href="https://pandao.github.io/editor.md/css/editormd.min.css" />
+    <script src="https://pandao.github.io/editor.md/lib/marked.min.js"></script>
+    <script src="https://pandao.github.io/editor.md/lib/prettify.min.js"></script>
+    <script src="https://pandao.github.io/editor.md/lib/raphael.min.js"></script>
+    <script src="https://pandao.github.io/editor.md/editormd.min.js"></script>
+  </head>
+  <body>
+    <div id="top">Document IDE</div>
+    <div id="main">
+      <div id="left">
+        <div class="panel-title">文件列表</div>
+        <div class="toolbar">
+          <input id="workspace-input" placeholder="/workspace/project" />
+          <button id="workspace-load">加载</button>
+        </div>
+        <div id="file-list"></div>
+      </div>
+      <div id="center">
+        <div class="panel-title">Markdown 编辑器</div>
+        <div id="editor"></div>
+      </div>
+      <div id="right">
+        <div class="panel-title">AI 对话交互</div>
+        <div id="chat-history"></div>
+        <form id="chat-form">
+          <textarea id="user-input" placeholder="输入消息..."></textarea>
+          <button id="start-btn" type="button">启动会话</button>
+          <button id="send-btn" type="submit" disabled>发送</button>
+        </form>
+      </div>
+    </div>
+    <script src="main.js"></script>
+  </body>
+  </html>

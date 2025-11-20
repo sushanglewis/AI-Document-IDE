@@ -1,0 +1,211 @@
+import React from 'react';
+import Editor from '@monaco-editor/react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Save, X, Circle } from 'lucide-react';
+import { cn } from '../lib/utils';
+import { useAppStore } from '../lib/store';
+import { apiClient } from '../lib/api';
+import { toast } from 'sonner';
+
+interface CodeEditorProps {
+  className?: string;
+}
+
+export const CodeEditor: React.FC<CodeEditorProps> = ({ className }) => {
+  const { openFiles, activeFilePath, updateOpenFile, removeOpenFile } = useAppStore();
+  const [isSaving, setIsSaving] = React.useState(false);
+  const [isPreview, setIsPreview] = React.useState(false);
+
+  const activeFile = openFiles.find(f => f.path === activeFilePath);
+
+  const handleSave = async () => {
+    if (!activeFile) return;
+
+    setIsSaving(true);
+    try {
+      const workspace = '/workspace'; // This should come from store
+      await apiClient.writeFile(workspace, activeFile.path, activeFile.content);
+      updateOpenFile(activeFile.path, { isDirty: false });
+      toast.success('文件已保存');
+    } catch (error) {
+      console.error('Failed to save file:', error);
+      toast.error('保存文件失败');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleContentChange = (value: string | undefined) => {
+    if (!activeFile || value === undefined) return;
+    updateOpenFile(activeFile.path, { 
+      content: value,
+      isDirty: true 
+    });
+  };
+
+  const handleCloseTab = (path: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    removeOpenFile(path);
+  };
+
+  const getLanguage = (filePath: string): string => {
+    const ext = filePath.split('.').pop()?.toLowerCase();
+    const languageMap: Record<string, string> = {
+      'js': 'javascript',
+      'jsx': 'javascript',
+      'ts': 'typescript',
+      'tsx': 'typescript',
+      'py': 'python',
+      'java': 'java',
+      'cpp': 'cpp',
+      'c': 'c',
+      'cs': 'csharp',
+      'go': 'go',
+      'rs': 'rust',
+      'php': 'php',
+      'rb': 'ruby',
+      'swift': 'swift',
+      'kt': 'kotlin',
+      'scala': 'scala',
+      'html': 'html',
+      'css': 'css',
+      'scss': 'scss',
+      'sass': 'sass',
+      'less': 'less',
+      'xml': 'xml',
+      'json': 'json',
+      'yaml': 'yaml',
+      'yml': 'yaml',
+      'toml': 'toml',
+      'ini': 'ini',
+      'cfg': 'ini',
+      'conf': 'ini',
+      'sh': 'shell',
+      'bash': 'shell',
+      'zsh': 'shell',
+      'fish': 'shell',
+      'ps1': 'powershell',
+      'bat': 'batch',
+      'cmd': 'batch',
+      'sql': 'sql',
+      'md': 'markdown',
+      'markdown': 'markdown',
+      'txt': 'plaintext',
+      'log': 'log',
+      'dockerfile': 'dockerfile',
+      'makefile': 'makefile',
+    };
+    
+    return languageMap[ext || ''] || 'plaintext';
+  };
+
+  if (openFiles.length === 0) {
+    return (
+      <div className={cn("flex items-center justify-center h-full bg-muted/30", className)}>
+        <div className="text-center text-muted-foreground">
+          <div className="text-lg mb-2">未打开文件</div>
+          <div className="text-sm">从文件树中选择一个文件开始编辑</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={cn("flex flex-col h-full", className)}>
+      {/* Tabs */}
+      <div className="flex items-center bg-muted border-b">
+        <div className="flex-1 flex overflow-x-auto">
+          {openFiles.map((file) => (
+            <div
+              key={file.path}
+              className={cn(
+                "flex items-center gap-2 px-3 py-2 border-r cursor-pointer min-w-0",
+                file.path === activeFilePath
+                  ? "bg-background border-b-0"
+                  : "bg-muted hover:bg-muted/80"
+              )}
+              onClick={() => useAppStore.getState().setActiveFile(file.path)}
+            >
+              <Circle 
+                className={cn(
+                  "h-2 w-2 flex-shrink-0",
+                  file.isDirty ? "text-orange-500 fill-orange-500" : "text-transparent"
+                )} 
+              />
+              <span className="text-sm truncate flex-1">
+                {file.path.split('/').pop()}
+              </span>
+              <button
+                onClick={(e) => handleCloseTab(file.path, e)}
+                className="p-0.5 hover:bg-accent rounded-sm flex-shrink-0"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+        
+        {/* Save button */}
+        {activeFile && (
+          <button
+            onClick={handleSave}
+            disabled={!activeFile.isDirty || isSaving}
+            className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isSaving ? (
+              <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+            ) : (
+              <Save className="h-4 w-4" />
+            )}
+            保存
+          </button>
+        )}
+        {activeFile && (activeFile.path.endsWith('.md') || activeFile.path.endsWith('.markdown')) && (
+          <button
+            onClick={() => setIsPreview(v => !v)}
+            className="ml-2 px-3 py-2 text-sm hover:bg-accent"
+          >
+            {isPreview ? '编辑模式' : '预览模式'}
+          </button>
+        )}
+      </div>
+
+      {/* Editor / Markdown Preview */}
+      <div className="flex-1">
+        {activeFile && (
+          isPreview && (activeFile.path.endsWith('.md') || activeFile.path.endsWith('.markdown')) ? (
+            <div className="prose prose-invert max-w-none p-4 overflow-y-auto h-full">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {activeFile.content || ''}
+              </ReactMarkdown>
+            </div>
+          ) : (
+            <Editor
+              height="100%"
+              language={getLanguage(activeFile.path)}
+              value={activeFile.content}
+              onChange={handleContentChange}
+              theme="vs-dark"
+              options={{
+                minimap: { enabled: true },
+                fontSize: 14,
+                wordWrap: 'on',
+                automaticLayout: true,
+                scrollBeyondLastLine: false,
+                renderWhitespace: 'selection',
+                bracketPairColorization: {
+                  enabled: true,
+                },
+                suggest: {
+                  showKeywords: true,
+                  showSnippets: true,
+                },
+              }}
+            />
+          )
+        )}
+      </div>
+    </div>
+  );
+};

@@ -1,0 +1,22 @@
+default_provider: openrouter
+max_steps: 20
+model_providers:
+  openrouter:
+    provider: openrouter
+    api_key: ""
+    base_url: http://localhost:9997/v1
+    api_version: null
+models:
+  default_model:
+    model: Qwen3-32B
+    model_provider: openrouter
+    max_tokens: 4096
+    temperature: 0.5
+    top_p: 1.0
+    top_k: 0
+    parallel_tool_calls: true
+    max_retries: 1
+trae_agent:
+  model: default_model
+  max_steps: 20
+  enable_lakeview: true

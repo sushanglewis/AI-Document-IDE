@@ -1,0 +1,24 @@
+model_providers:
+  openrouter:
+    api_key: "sk-xinference"
+    provider: openrouter
+    base_url: http://10.0.2.22:9997/v1
+
+models:
+  qwen3:
+    model: Qwen3-32B
+    model_provider: openrouter
+    temperature: 0.2
+    top_p: 1
+    top_k: 0
+    parallel_tool_calls: true
+    max_retries: 3
+
+agents:
+  trae_agent:
+    max_steps: 100
+    model: qwen3
+    enable_lakeview: false
+
+allow_mcp_servers: []
+mcp_servers: {}

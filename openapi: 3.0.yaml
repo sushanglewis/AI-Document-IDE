@@ -1,0 +1,236 @@
+openapi: 3.0.3
+info:
+  title: Trae Agent API
+  version: 1.0.0
+  description: 基于 Trae Agent 的本地开发接口封装
+servers:
+  - url: http://localhost:8000
+tags:
+  - name: Files
+  - name: Agent
+  - name: System
+paths:
+  /api/files:
+    get:
+      tags: [Files]
+      summary: 获取工作空间内的 .md 文件列表
+      operationId: listMarkdownFiles
+      parameters:
+        - name: workspace
+          in: query
+          required: true
+          schema: { type: string }
+          description: 工作空间绝对路径
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FilesListResponse' }
+              examples:
+                ok:
+                  value: { files: ['README.md', '年终总结汇报.md'] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/file:
+    get:
+      tags: [Files]
+      summary: 读取文件内容
+      operationId: readFile
+      parameters:
+        - name: workspace
+          in: query
+          required: true
+          schema: { type: string }
+        - name: file
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileContentResponse' }
+              examples:
+                ok:
+                  value: { content: '# 年终总结汇报\n...' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      tags: [Files]
+      summary: 写入文件内容
+      operationId: writeFile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FileWriteRequest' }
+            examples:
+              write:
+                value:
+                  file: /Users/stylesu/Documents/Heils/Agent/年终总结汇报.md
+                  content: "# 年终总结汇报\n..."
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BasicSuccessResponse' }
+              examples:
+                ok: { value: { success: true } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/agent/run:
+    post:
+      tags: [Agent]
+      summary: 以任务模式运行 Trae Agent
+      description: 内部通过 `uv run -m trae_agent.cli run` 启动
+      operationId: runAgentTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AgentRunRequest' }
+            examples:
+              hello:
+                value:
+                  workspace: /Users/stylesu/Documents/Heils/Agent
+                  task: 创建一个 hello world Python 脚本
+      responses:
+        '200':
+          description: 已启动
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentStartResponse' }
+              examples:
+                ok: { value: { success: true, pid: 12345 } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/agent/cli:
+    post:
+      tags: [Agent]
+      summary: 以 CLI 模式运行 Trae Agent
+      description: 内部通过 `uv run -m trae_agent.cli <command>` 启动；若未提供 `--working-dir/--config-file` 将自动补齐
+      operationId: runAgentCli
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AgentCliRequest' }
+            examples:
+              outline:
+                value:
+                  workspace: /Users/stylesu/Documents/Heils/Agent
+                  command: run "完善 /Users/stylesu/Documents/Heils/Agent/年终总结汇报.md ..." --max-steps 10
+      responses:
+        '200':
+          description: 已启动
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentStartResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/select-workspace:
+    post:
+      tags: [System]
+      summary: 打开系统文件夹选择器（仅 macOS）
+      operationId: selectWorkspace
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SelectWorkspaceResponse' }
+              examples:
+                ok:
+                  value: { path: /Users/stylesu/Documents/Heils/Agent }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    FilesListResponse:
+      type: object
+      properties:
+        files:
+          type: array
+          items: { type: string }
+      required: [files]
+
+    FileContentResponse:
+      type: object
+      properties:
+        content: { type: string }
+      required: [content]
+
+    FileWriteRequest:
+      type: object
+      properties:
+        file: { type: string, description: 绝对路径（推荐） }
+        content: { type: string }
+      required: [file, content]
+
+    BasicSuccessResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+      required: [success]
+
+    AgentRunRequest:
+      type: object
+      properties:
+        workspace: { type: string }
+        task: { type: string }
+      required: [workspace, task]
+
+    AgentCliRequest:
+      type: object
+      properties:
+        workspace: { type: string }
+        command: { type: string }
+      required: [workspace, command]
+
+    AgentStartResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        pid: { type: integer }
+      required: [success, pid]
+
+    SelectWorkspaceResponse:
+      type: object
+      properties:
+        path: { type: string }
+      required: [path]
+
+    ErrorResponse:
+      type: object
+      properties:
+        error: { type: string }
+        details: { type: string }
+
+  responses:
+    BadRequest:
+      description: 参数错误
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    InternalError:
+      description: 服务器错误
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: 可选；本地开发默认不启用鉴权
+
+security: []
