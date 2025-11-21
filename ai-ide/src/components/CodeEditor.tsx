@@ -1,12 +1,11 @@
 import React from 'react';
 import Editor from '@monaco-editor/react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { Save, X, Circle } from 'lucide-react';
+import { Save, X, Circle, Edit3, Split } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useAppStore } from '../lib/store';
 import { apiClient } from '../lib/api';
 import { toast } from 'sonner';
+import { MarkdownPreview } from './MarkdownPreview';
 
 interface CodeEditorProps {
   className?: string;
@@ -15,7 +14,9 @@ interface CodeEditorProps {
 export const CodeEditor: React.FC<CodeEditorProps> = ({ className }) => {
   const { openFiles, activeFilePath, updateOpenFile, removeOpenFile } = useAppStore();
   const [isSaving, setIsSaving] = React.useState(false);
-  const [isPreview, setIsPreview] = React.useState(false);
+  const [previewMode, setPreviewMode] = React.useState<'edit' | 'split'>('edit');
+  const [isFullscreen, setIsFullscreen] = React.useState(false);
+  const [isPreviewHidden, setPreviewHidden] = React.useState(false);
 
   const activeFile = openFiles.find(f => f.path === activeFilePath);
 
@@ -42,6 +43,33 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ className }) => {
       content: value,
       isDirty: true 
     });
+  };
+
+  const handleToggleFullscreen = () => {
+    setIsFullscreen(!isFullscreen);
+  };
+
+  React.useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const toggle = (e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'm';
+      if (toggle) {
+        e.preventDefault();
+        setPreviewHidden((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  const handleRefreshPreview = () => {
+    // Trigger a re-render by updating the file content (add a space and remove it)
+    if (activeFile) {
+      const currentContent = activeFile.content;
+      updateOpenFile(activeFile.path, { content: currentContent + ' ' });
+      setTimeout(() => {
+        updateOpenFile(activeFile.path, { content: currentContent });
+      }, 10);
+    }
   };
 
   const handleCloseTab = (path: string, e: React.MouseEvent) => {
@@ -148,12 +176,35 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ className }) => {
         
         <div className="flex items-center gap-2 ml-auto pr-2">
           {activeFile && (activeFile.path.endsWith('.md') || activeFile.path.endsWith('.markdown')) && (
-            <button
-              onClick={() => setIsPreview(v => !v)}
-              className="px-3 py-2 text-sm hover:bg-accent"
-            >
-              {isPreview ? '编辑模式' : '预览模式'}
-            </button>
+            <div className="flex items-center gap-1 bg-muted rounded-md p-1">
+              <button
+                onClick={() => setPreviewMode('edit')}
+                className={cn(
+                  "px-2 py-1 text-xs rounded transition-colors flex items-center gap-1",
+                  previewMode === 'edit' 
+                    ? "bg-primary text-primary-foreground" 
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent"
+                )}
+                title="编辑模式"
+              >
+                <Edit3 className="h-3 w-3" />
+                编辑
+              </button>
+              <button
+                onClick={() => setPreviewMode('split')}
+                className={cn(
+                  "px-2 py-1 text-xs rounded transition-colors flex items-center gap-1",
+                  previewMode === 'split' 
+                    ? "bg-primary text-primary-foreground" 
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent"
+                )}
+                title="分屏模式"
+              >
+                <Split className="h-3 w-3" />
+                分屏
+              </button>
+              
+            </div>
           )}
           {activeFile && (
             <button
@@ -173,15 +224,54 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ className }) => {
       </div>
 
       {/* Editor / Markdown Preview */}
-      <div className="flex-1">
-        {activeFile && (
-          isPreview && (activeFile.path.endsWith('.md') || activeFile.path.endsWith('.markdown')) ? (
-            <div className="prose prose-invert max-w-none p-4 overflow-y-auto h-full bg-black text-white">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {activeFile.content || ''}
-              </ReactMarkdown>
+      <div className="flex-1 flex min-h-0">
+        {activeFile && (activeFile.path.endsWith('.md') || activeFile.path.endsWith('.markdown')) && previewMode === 'split' ? (
+          <div className={cn("flex h-full min-h-0", 'flex-row')}>
+            {previewMode === 'split' && (
+              <div className="flex-1 border-r overflow-y-auto">
+                <Editor
+                  height="100%"
+                  language={getLanguage(activeFile.path)}
+                  value={activeFile.content}
+                  onChange={handleContentChange}
+                  theme="vs"
+                  options={{
+                    minimap: { enabled: false },
+                    fontSize: 14,
+                    wordWrap: 'on',
+                    automaticLayout: true,
+                    scrollBeyondLastLine: false,
+                    renderWhitespace: 'selection',
+                    bracketPairColorization: { enabled: true },
+                    suggest: { showKeywords: true, showSnippets: true },
+                  }}
+                />
+              </div>
+            )}
+            <div className={cn(
+              'flex-1 overflow-y-auto min-h-0 h-full',
+              isPreviewHidden && 'hidden'
+            )}>
+              <MarkdownPreview
+                content={activeFile.content || ''}
+                showToolbar={false}
+                onRefresh={handleRefreshPreview}
+                onToggleFullscreen={handleToggleFullscreen}
+                isFullscreen={isFullscreen}
+                showWordCount={true}
+                showReadingTime={true}
+                enableAutoScroll={false}
+                customStyles={{
+                  fontSize: 'base',
+                  lineHeight: 'relaxed',
+                  theme: 'auto'
+                }}
+              />
             </div>
-          ) : (
+          </div>
+        ) : (
+          // Edit Mode or Non-Markdown Files
+          activeFile && (
             <Editor
               height="100%"
               language={getLanguage(activeFile.path)}
@@ -195,13 +285,8 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ className }) => {
                 automaticLayout: true,
                 scrollBeyondLastLine: false,
                 renderWhitespace: 'selection',
-                bracketPairColorization: {
-                  enabled: true,
-                },
-                suggest: {
-                  showKeywords: true,
-                  showSnippets: true,
-                },
+                bracketPairColorization: { enabled: true },
+                suggest: { showKeywords: true, showSnippets: true },
               }}
             />
           )

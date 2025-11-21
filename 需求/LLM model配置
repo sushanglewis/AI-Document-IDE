@@ -1,0 +1,6 @@
+model name：Qwen3-32B
+model uid：Qwen3-32B
+base url：http://10.0.2.22:9997
+api key： apikey123
+llm client：Xinference 
+

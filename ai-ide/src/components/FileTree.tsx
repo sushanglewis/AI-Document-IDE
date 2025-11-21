@@ -9,10 +9,9 @@ import { toast } from 'sonner';
 interface FileTreeProps {
   className?: string;
   onFileSelect: (path: string) => void;
-  onCollapse?: () => void;
 }
 
-export const FileTree: React.FC<FileTreeProps> = ({ className, onFileSelect, onCollapse }) => {
+export const FileTree: React.FC<FileTreeProps> = ({ className, onFileSelect }) => {
   const { fileTree, workspaceRoot, updateFileNode, setFileTree, currentSessionId } = useAppStore();
   const [isRefreshing, setIsRefreshing] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -166,18 +165,9 @@ export const FileTree: React.FC<FileTreeProps> = ({ className, onFileSelect, onC
 
   return (
     <div className={cn("flex flex-col h-full", className)}>
-        <div className="flex items-center justify-between p-2 border-b">
-          <h3 className="text-sm font-semibold">Files</h3>
-        <div className="flex gap-1 items-center">
-          {onCollapse && (
-            <button
-              onClick={onCollapse}
-              className="p-1 hover:bg-accent rounded-full h-6 w-6 flex items-center justify-center font-sans text-xs"
-              title="折叠文件"
-            >
-              &lt;
-            </button>
-          )}
+      <div className="flex items-center justify-between p-2 border-b">
+        <h3 className="text-sm font-semibold">Files</h3>
+        <div className="flex flex-row gap-1 items-center">
           <button
             onClick={refreshTree}
             disabled={isRefreshing}

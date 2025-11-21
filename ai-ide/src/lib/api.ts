@@ -63,6 +63,9 @@ export interface InteractiveStartRequest {
   docker_image_file?: string;
   docker_keep?: boolean;
   prompt?: string;
+  agent_mode_config?: { mode_name?: string; system_prompt?: string };
+  enable_quality_review?: boolean;
+  quality_review_rules?: string;
 }
 
 export interface InteractiveTaskRequest {
@@ -73,6 +76,9 @@ export interface InteractiveTaskRequest {
   must_patch?: boolean;
   patch_path?: string;
   prompt?: string;
+  agent_mode_config?: { mode_name?: string; system_prompt?: string };
+  enable_quality_review?: boolean;
+  quality_review_rules?: string;
 }
 
 export interface CreateConfigRequest {

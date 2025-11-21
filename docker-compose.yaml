@@ -1,0 +1,26 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: trae-agent/Dockerfile
+    environment:
+      - POSTGRES_URL=postgresql+psycopg://postgres:postgres@postgres:5432/trae
+    ports:
+      - "8090:8090"
+    volumes:
+      - /Users/stylesu/Documents/Heils/Agent/workspace:/workspace
+      - /Users/stylesu/Documents/Heils/Agent/OpenAPI:/app/openapi
+    depends_on:
+      - postgres
+  postgres:
+    image: postgres:16
+    environment:
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=trae
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

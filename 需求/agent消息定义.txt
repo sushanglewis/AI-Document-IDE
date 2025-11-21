@@ -1,0 +1,53 @@
+会话模式，用户通过POST localhost:8090/agent/interactive/task/stream  向trae agent发送会话，前端接收SSE流式返回的消息，并将用户消息、agent输出持久化、流式打印到消息记录中（消息气泡形式）
+需要显示的内容：
+- 用户提交的需求。
+- agent返回信息：
+  1、LLM thinking状态，打印：🤔“thinking”：llm_response.content
+  消息结构：
+{
+  step_number: number,           // 当前步骤编号
+  state: "thinking",             // 状态标识
+  llm_response: {
+    content: string,             // LLM生成的完整回复内容
+    tool_calls: ToolCall[] | null, // 可能包含的工具调用
+    usage: {                     // token使用统计
+      prompt_tokens: number,
+      completion_tokens: number,
+      total_tokens: number
+    }
+  }
+}
+  2、calling tools状态，打印：🔧"tools_call":tool_calls.name、tool_results.success、tool_calls.content(if not null)
+  消息结构：
+  {
+  step_number: number,
+  state: "calling_tool",
+  tool_calls: [{
+    id: string,                  // 工具调用唯一ID
+    name: string,                // 工具名称 (bash_tool, edit_tool等)
+    parameters: object           // 工具调用参数
+  }],
+  tool_results: [{
+    id: string,                  // 对应调用ID
+    success: boolean,            // 执行成功状态
+    content: string,             // 工具执行结果内容
+    error?: string              // 错误信息（失败时）
+  }]
+}
+  3、lakeview总结，打印：tags_emoji、 desc_task、desc_details、
+  消息结构：
+  {
+  lakeview_step: {
+    desc_task: string,           // 当前步骤任务描述
+    desc_details: string,        // 详细说明
+    tags_emoji: string          // 带表情符号的分类标签
+  }
+}
+  4、reflecting状态，打印：🤔“reflecting”：reflection
+  消息结构：
+  {
+  step_number: number,
+  state: "reflecting",
+  reflection: string,            // 反思内容
+  error?: string                // 触发反思的错误信息
+}

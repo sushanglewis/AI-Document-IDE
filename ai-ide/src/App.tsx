@@ -1,14 +1,13 @@
 import React from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { Settings } from 'lucide-react';
 import { Toaster } from 'sonner';
 import { FileTree } from './components/FileTree';
-import { ChatPanel } from './components/ChatPanel';
 import { CodeEditor } from './components/CodeEditor';
 import { StreamingConsole } from './components/StreamingConsole';
+import { SystemSettings } from './components/SystemSettings';
 import { useAppStore, Session } from './lib/store';
 import { apiClient, AgentStep } from './lib/api';
 import { toast } from 'sonner';
-import { cn } from './lib/utils';
 
 // Add error boundary to handle network issues
 class ErrorBoundary extends React.Component<
@@ -52,8 +51,6 @@ class ErrorBoundary extends React.Component<
   }
 }
 
-export default App;
-
 function App() {
   const { 
     currentSessionId, 
@@ -61,7 +58,8 @@ function App() {
     systemPrompt,
     setWorkspaceRoot, 
     setFileTree, 
-    addSession,
+    setSessions,
+    setCurrentSession,
     updateSession,
     setSystemPrompt,
     sessions,
@@ -72,7 +70,6 @@ function App() {
   const [isStreaming, setIsStreaming] = React.useState(false);
   const [currentSteps, setCurrentSteps] = React.useState<AgentStep[]>([]);
   const [isBackendAvailable, setIsBackendAvailable] = React.useState(true);
-  const [workspaceOptions, setWorkspaceOptions] = React.useState<string[]>([]);
   const [selectedProvider, setSelectedProvider] = React.useState<string>('openrouter');
   const [modelBaseUrl, setModelBaseUrl] = React.useState<string>('http://10.0.2.22:9997/v1');
   const [modelName, setModelName] = React.useState<string>('Qwen3-32B');
@@ -81,17 +78,21 @@ function App() {
     { name: 'Xinference-OpenRouter-Qwen3', provider: 'openrouter', baseUrl: 'http://10.0.2.22:9997/v1', model: 'Qwen3-32B', apiKey: 'sk-xinference' },
   ]);
   const [selectedModelName, setSelectedModelName] = React.useState<string>('Xinference-OpenRouter-Qwen3');
+  const [isSystemSettingsOpen, setIsSystemSettingsOpen] = React.useState(false);
+  const [systemPrompts, setSystemPrompts] = React.useState<Array<{id: string, name: string, content: string}>>([]);
   const [isModelModalOpen, setIsModelModalOpen] = React.useState(false);
   const [isCreatingModel, setIsCreatingModel] = React.useState(false);
-  const [leftCollapsed, setLeftCollapsed] = React.useState(false);
-  const [chatCollapsed, setChatCollapsed] = React.useState(false);
+  const [isCommandOpen, setIsCommandOpen] = React.useState(false);
+  const [commandText, setCommandText] = React.useState('');
+  const [isConsoleOpen, setIsConsoleOpen] = React.useState(false);
+  const [qualityReviewEnabled, setQualityReviewEnabled] = React.useState<boolean>(false);
+  const [qualityReviewRules, setQualityReviewRules] = React.useState<string>("");
 
   // Initialize workspace and create initial session
   React.useEffect(() => {
     const initializeApp = async () => {
       try {
         const workspaces = await apiClient.listWorkspaces();
-        setWorkspaceOptions(workspaces);
         const selectedWorkspace = workspaces[0] || '/workspace';
         setWorkspaceRoot(selectedWorkspace);
         setIsBackendAvailable(true);
@@ -118,6 +119,16 @@ function App() {
         if (!currentSessionId && sessions.length === 0) {
           await createNewSession(selectedWorkspace);
         }
+
+        try {
+          const docPrompt = await apiClient.getPrompt('DOCUMENT_AGENT_SYSTEM_PROMPT');
+          const devPrompt = await apiClient.getPrompt('TRAE_AGENT_SYSTEM_PROMPT');
+          const items = [
+            { id: 'DOCUMENT_AGENT_SYSTEM_PROMPT', name: '文档助理模式', content: docPrompt },
+            { id: 'TRAE_AGENT_SYSTEM_PROMPT', name: '代码专家模式', content: devPrompt }
+          ].filter(p => p.content && p.content.trim().length > 0);
+          setSystemPrompts(items);
+        } catch {}
       } catch (error) {
         console.error('Failed to initialize app:', error);
         setIsBackendAvailable(false);
@@ -136,22 +147,30 @@ function App() {
     initializeApp();
   }, [setWorkspaceRoot, setFileTree, currentSessionId, sessions.length]);
 
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setIsCommandOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
-  const handleWorkspaceSelect = async (ws: string) => {
-    setWorkspaceRoot(ws);
-    const files = await apiClient.listFiles(ws);
-    const tree = files.map(file => ({
-      name: file.name,
-      path: file.path,
-      type: file.type,
-      size: file.size,
-      modified: file.modified,
-      children: file.type === 'directory' ? [] : undefined,
-      isExpanded: false,
-      isLoading: false,
-    }));
-    setFileTree(tree);
-  };
+  React.useEffect(() => {
+    const onToggle = (e: KeyboardEvent) => {
+      const isToggle = (e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'j';
+      if (isToggle) {
+        e.preventDefault();
+        setIsConsoleOpen((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', onToggle);
+    return () => window.removeEventListener('keydown', onToggle);
+  }, []);
+
+
 
   const handleTestConnectivity = async () => {
     try {
@@ -178,6 +197,30 @@ function App() {
     toast.success('模型配置已保存');
   };
 
+  // System Settings Functions
+  const handleSaveSystemPrompt = (prompt: {id: string, name: string, content: string}) => {
+    setSystemPrompts(prev => {
+      const others = prev.filter(p => p.id !== prompt.id);
+      return [...others, prompt];
+    });
+    toast.success('系统提示词已保存');
+  };
+
+  const handleDeleteSystemPrompt = (id: string) => {
+    setSystemPrompts(prev => prev.filter(p => p.id !== id));
+    toast.success('系统提示词已删除');
+  };
+
+
+  const handleModelConfigChange = (config: {provider: string, model: string, apiKey: string, baseUrl?: string}) => {
+    setSelectedProvider(config.provider);
+    setModelName(config.model);
+    setApiKey(config.apiKey);
+    if (config.baseUrl) {
+      setModelBaseUrl(config.baseUrl);
+    }
+  };
+
   const createNewSession = async (workspacePath?: string) => {
     try {
       const chosen = savedModels.find((m) => m.name === selectedModelName) || {
@@ -196,6 +239,8 @@ function App() {
         api_key: chosen.apiKey,
         prompt: systemPrompt as any,
         console_type: 'lakeview',
+        enable_quality_review: qualityReviewEnabled,
+        quality_review_rules: qualityReviewRules,
       });
       
       const newSession: Session = {
@@ -210,7 +255,8 @@ function App() {
         systemPrompt: systemPrompt,
       };
       
-      addSession(newSession);
+      setSessions([newSession]);
+      setCurrentSession(session.session_id);
       toast.success('新会话已创建');
       return session.session_id;
     } catch (error) {
@@ -222,6 +268,7 @@ function App() {
 
   const handleSendMessage = async (message: string, useStreaming: boolean) => {
     let sessionId = currentSessionId;
+    const makeMsgId = () => (globalThis.crypto && 'randomUUID' in globalThis.crypto) ? (globalThis.crypto as any).randomUUID() : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
     
     if (!sessionId) {
       sessionId = await createNewSession();
@@ -252,6 +299,312 @@ function App() {
             task: message,
             working_dir: workspaceRoot,
             prompt: systemPrompt as any,
+            enable_quality_review: qualityReviewEnabled,
+            quality_review_rules: qualityReviewRules,
+          },
+          (data) => {
+            console.log('Stream data received:', data);
+            
+            // Debug: Log the raw data structure
+            if (data.type === 'step' && data.data.llm_response) {
+              console.log('LLM Response Debug:', {
+                content_excerpt: JSON.stringify(data.data.llm_response.content_excerpt),
+                content_length: data.data.llm_response.content_excerpt?.length,
+                finish_reason: data.data.llm_response.finish_reason,
+                model: data.data.llm_response.model,
+                usage: data.data.llm_response.usage
+              });
+            }
+            
+            if (data.type === 'start') {
+              console.log('Session started:', data.data);
+              const taskText = (data.data && data.data.task) ? String(data.data.task) : message;
+              updateSession(sessionId!, {
+                messages: [
+                  ...(sessions.find(s => s.id === sessionId)?.messages || []),
+                  {
+                    id: makeMsgId(),
+                    type: 'system' as const,
+                    content: `task: ${taskText}`,
+                    timestamp: new Date(),
+                    sessionId: sessionId!
+                  }
+                ]
+              });
+            } else if (data.type === 'step') {
+              setCurrentSteps(prev => [...prev, data.data]);
+              
+              // Process the step data and create meaningful messages
+              const stepMessage = [];
+
+              // Required fields summary
+              const stepNumber = data.data.step_number;
+              const stepTimestamp = data.data.timestamp;
+              const stepId = `step_${stepNumber}_${stepTimestamp}`;
+              const completed = String((data.data.state || '').toUpperCase() === 'COMPLETED');
+              stepMessage.push({
+                id: stepId + '_summary',
+                type: 'system' as const,
+                content: `步骤: ${stepNumber ?? '-'} | 完成: ${completed}`,
+                timestamp: new Date(stepTimestamp),
+                sessionId: sessionId,
+                stepId: stepId,
+              });
+              
+              // Add LLM response content if available
+              if (data.data.llm_response) {
+                // Use full content if available, otherwise use content_excerpt
+                const llmContent = data.data.llm_response.content || data.data.llm_response.content_excerpt || '';
+                const content = llmContent.trim();
+                
+                console.log('LLM response debug:', {
+                  has_full_content: !!data.data.llm_response.content,
+                  has_excerpt: !!data.data.llm_response.content_excerpt,
+                  content_preview: content.substring(0, 100),
+                  content_length: content.length,
+                  finish_reason: data.data.llm_response.finish_reason,
+                  has_tool_calls: !!(data.data.llm_response.tool_calls && data.data.llm_response.tool_calls.length > 0)
+                });
+                
+                if (content.length > 0) {
+                  stepMessage.push({
+                  id: stepId + '_response',
+                  type: 'agent' as const,
+                  content: content,
+                  timestamp: new Date(stepTimestamp),
+                  sessionId: sessionId,
+                  stepId: stepId,
+                  metadata: {
+                    model: data.data.llm_response.model,
+                    usage: data.data.llm_response.usage,
+                    finish_reason: data.data.llm_response.finish_reason,
+                    has_tool_calls: !!(data.data.llm_response.tool_calls && data.data.llm_response.tool_calls.length > 0)
+                  }
+                });
+                  // Also log finish_reason when present
+                  if (data.data.llm_response.finish_reason) {
+                    stepMessage.push({
+                      id: stepId + '_finish_reason',
+                      type: 'system' as const,
+                      content: `finish_reason: ${data.data.llm_response.finish_reason}`,
+                      timestamp: new Date(stepTimestamp),
+                      sessionId: sessionId,
+                      stepId: stepId,
+                    });
+                  }
+                } else if (data.data.llm_response.tool_calls && data.data.llm_response.tool_calls.length > 0) {
+                  // If no text content but has tool calls, show tool execution status
+                  const toolCallNames = data.data.llm_response.tool_calls.map((tool: any) => tool.name).join(', ');
+                  stepMessage.push({
+                    id: stepId + '_tools',
+                    type: 'agent' as const,
+                    content: `🔧 正在执行工具: ${toolCallNames}`,
+                    timestamp: new Date(stepTimestamp),
+                    sessionId: sessionId,
+                    stepId: stepId,
+                    metadata: {
+                      model: data.data.llm_response.model,
+                      usage: data.data.llm_response.usage,
+                      finish_reason: data.data.llm_response.finish_reason,
+                      is_tool_execution: true
+                    }
+                  });
+                  // Explicitly print tool calls array
+                  stepMessage.push({
+                    id: stepId + '_tool_calls_list',
+                    type: 'system' as const,
+                    content: `tool_calls: ${JSON.stringify(data.data.llm_response.tool_calls)}`,
+                    timestamp: new Date(stepTimestamp),
+                    sessionId: sessionId,
+                    stepId: stepId,
+                  });
+                } else {
+                  // Even if content is empty, show model thinking status
+                  stepMessage.push({
+                    id: stepId + '_thinking',
+                    type: 'agent' as const,
+                    content: '🤔 AI正在思考中...',
+                    timestamp: new Date(stepTimestamp),
+                    sessionId: sessionId,
+                    stepId: stepId,
+                    metadata: {
+                      model: data.data.llm_response.model,
+                      usage: data.data.llm_response.usage,
+                      finish_reason: data.data.llm_response.finish_reason,
+                      is_thinking: true
+                    }
+                  });
+                  // Describe empty content reason
+                  stepMessage.push({
+                    id: stepId + '_empty_reason',
+                    type: 'system' as const,
+                    content: `LLM 内容为空。finish_reason=${data.data.llm_response.finish_reason || 'unknown'}，tool_calls=${(data.data.llm_response.tool_calls && data.data.llm_response.tool_calls.length > 0) ? 'present' : 'none'}`,
+                    timestamp: new Date(data.data.timestamp),
+                    sessionId: sessionId,
+                    stepId: stepId,
+                  });
+                }
+              }
+              
+              // Add tool calls information (simplified - backend only provides name and call_id)
+              if (data.data.tool_calls && data.data.tool_calls.length > 0) {
+                const toolNames = data.data.tool_calls.map((tool: any) => tool.name).join(', ');
+                const toolCallCount = data.data.tool_calls.length;
+                
+                stepMessage.push({
+                  id: stepId + '_tools',
+                  type: 'system' as const,
+                  content: `🔧 执行工具 (${toolCallCount}): ${toolNames}`,
+                  timestamp: new Date(stepTimestamp),
+                  sessionId: sessionId,
+                  stepId: stepId
+                });
+
+                // Add tool results summary if available
+                if (data.data.tool_results_summary) {
+                  const { count = 0, success_count = 0, error_count = 0 } = data.data.tool_results_summary;
+                  stepMessage.push({
+                    id: stepId + '_tool_results',
+                    type: 'system' as const,
+                    content: `📊 工具执行结果: 总计${count}, 成功${success_count}, 失败${error_count}`,
+                    timestamp: new Date(stepTimestamp),
+                    sessionId: sessionId,
+                    stepId: stepId
+                  });
+                }
+              }
+              
+              // Add reflection if available
+              if (data.data.reflection) {
+                stepMessage.push({
+                  id: stepId + '_reflection',
+                  type: 'system' as const,
+                  content: `反思: ${data.data.reflection}`,
+                  timestamp: new Date(stepTimestamp),
+                  sessionId: sessionId,
+                  stepId: stepId
+                });
+              }
+
+              // Lakeview step details per agent消息定义
+              if (data.data.lakeview_step) {
+                const lv = data.data.lakeview_step;
+                const content = `${lv.tags_emoji || ''} ${lv.desc_task || ''} · ${lv.desc_details || ''}`.trim();
+                stepMessage.push({
+                  id: stepId + '_lakeview_step',
+                  type: 'system' as const,
+                  content,
+                  timestamp: new Date(stepTimestamp),
+                  sessionId: sessionId,
+                  stepId: stepId
+                });
+              }
+
+              // Add lakeview summary if available
+              if (data.data.lakeview_summary) {
+                stepMessage.push({
+                  id: stepId + '_lakeview',
+                  type: 'system' as const,
+                  content: `Lakeview: ${data.data.lakeview_summary}`,
+                  timestamp: new Date(stepTimestamp),
+                  sessionId: sessionId,
+                  stepId: stepId
+                });
+              }
+              
+              // Add all step messages to session
+              if (stepMessage.length > 0) {
+                const currentMessages = sessions.find(s => s.id === sessionId)?.messages || [];
+                updateSession(sessionId, {
+                  messages: [...currentMessages, ...stepMessage]
+                });
+              }
+          } else if (data.type === 'completed') {
+            setCurrentSteps(data.data.steps || []);
+            
+            // Add completion summary
+            const completionMessage = {
+              id: makeMsgId(),
+              type: 'system' as const,
+              content: `✅ 任务完成\n执行时间: ${data.data.execution_time?.toFixed(2)}s\n步骤数: ${data.data.steps_count}\n结果: ${data.data.final_result || '成功'}`,
+              timestamp: new Date(),
+              sessionId: sessionId
+            };
+            
+            const currentMessages = sessions.find(s => s.id === sessionId)?.messages || [];
+            updateSession(sessionId, {
+              messages: [...currentMessages, completionMessage]
+            });
+
+            // Ensure lakeview summary reply exists
+            const lv = data.data.lakeview_summary;
+            const hasLv = !!lv && typeof lv === 'string' && lv.trim().length > 0;
+            if (!hasLv) {
+              const stepNames = (data.data.steps || []).map((st: any) => st.tool_calls?.map((t: any) => t.name).join(', ')).filter(Boolean);
+              const toolsUsed = stepNames.length ? Array.from(new Set(stepNames.join(', ').split(',').map((s: string) => s.trim()).filter(Boolean))).join(', ') : '-';
+              const fallbackLv = `Lakeview: 执行完成。使用工具: ${toolsUsed}。最终结果: ${data.data.final_result || '成功'}`;
+              const lvMsg = {
+                id: makeMsgId(),
+                type: 'system' as const,
+                content: fallbackLv,
+                timestamp: new Date(),
+                sessionId: sessionId
+              };
+              const msgs2 = (sessions.find(s => s.id === sessionId)?.messages || []).concat([lvMsg]);
+              updateSession(sessionId, { messages: msgs2 });
+            } else {
+              const lvMsg = {
+                id: makeMsgId(),
+                type: 'system' as const,
+                content: `Lakeview: ${String(lv)}`,
+                timestamp: new Date(),
+                sessionId: sessionId
+              };
+              const msgs2 = (sessions.find(s => s.id === sessionId)?.messages || []).concat([lvMsg]);
+              updateSession(sessionId, { messages: msgs2 });
+            }
+          }
+          },
+          (error) => {
+            console.error('Streaming error:', error);
+            toast.error('流式处理出错');
+            
+            // Add error message to session
+            updateSession(sessionId, {
+              messages: [...(sessions.find(s => s.id === sessionId)?.messages || []), {
+                id: makeMsgId(),
+                type: 'error' as const,
+                content: '流式处理出错: ' + error.message,
+                timestamp: new Date(),
+                sessionId: sessionId
+              }]
+            });
+          },
+          () => {
+            setIsStreaming(false);
+            toast.success('任务完成');
+          }
+        );
+      } catch (error) {
+      console.error('Failed to run task:', error);
+      toast.error('执行任务失败，请检查后端服务状态');
+      setIsStreaming(false);
+    }
+    }
+      // Unified streaming mode - remove non-streaming path
+      try {
+        // Use the streaming implementation directly
+        setIsStreaming(true);
+        setCurrentSteps([]);
+        
+        await apiClient.runInteractiveTaskStream(
+          {
+            session_id: sessionId,
+            task: message,
+            working_dir: workspaceRoot,
+            prompt: systemPrompt as any,
+            enable_quality_review: qualityReviewEnabled,
+            quality_review_rules: qualityReviewRules,
           },
           (data) => {
             console.log('Stream data received:', data);
@@ -290,14 +643,16 @@ function App() {
 
               // Required fields summary
               const stepNumber = data.data.step_number;
+              const stepTimestamp = data.data.timestamp;
+              const stepId = `step_${stepNumber}_${stepTimestamp}`;
               const completed = String((data.data.state || '').toUpperCase() === 'COMPLETED');
               stepMessage.push({
-                id: data.data.step_id + '_summary',
+                id: stepId + '_summary',
                 type: 'system' as const,
                 content: `步骤: ${stepNumber ?? '-'} | 完成: ${completed}`,
-                timestamp: new Date(data.data.timestamp),
+                timestamp: new Date(stepTimestamp),
                 sessionId: sessionId,
-                stepId: data.data.step_id,
+                stepId: stepId,
               });
               
               // Add LLM response content if available
@@ -317,40 +672,40 @@ function App() {
                 
                 if (content.length > 0) {
                   stepMessage.push({
-                    id: data.data.step_id + '_response',
-                    type: 'agent' as const,
-                    content: content,
-                    timestamp: new Date(data.data.timestamp),
-                    sessionId: sessionId,
-                    stepId: data.data.step_id,
-                    metadata: {
-                      model: data.data.llm_response.model,
-                      usage: data.data.llm_response.usage,
-                      finish_reason: data.data.llm_response.finish_reason,
-                      has_tool_calls: !!(data.data.llm_response.tool_calls && data.data.llm_response.tool_calls.length > 0)
-                    }
-                  });
+                  id: stepId + '_response',
+                  type: 'agent' as const,
+                  content: content,
+                  timestamp: new Date(stepTimestamp),
+                  sessionId: sessionId,
+                  stepId: stepId,
+                  metadata: {
+                    model: data.data.llm_response.model,
+                    usage: data.data.llm_response.usage,
+                    finish_reason: data.data.llm_response.finish_reason,
+                    has_tool_calls: !!(data.data.llm_response.tool_calls && data.data.llm_response.tool_calls.length > 0)
+                  }
+                });
                   // Also log finish_reason when present
                   if (data.data.llm_response.finish_reason) {
                     stepMessage.push({
-                      id: data.data.step_id + '_finish_reason',
+                      id: stepId + '_finish_reason',
                       type: 'system' as const,
                       content: `finish_reason: ${data.data.llm_response.finish_reason}`,
-                      timestamp: new Date(data.data.timestamp),
+                      timestamp: new Date(stepTimestamp),
                       sessionId: sessionId,
-                      stepId: data.data.step_id,
+                      stepId: stepId,
                     });
                   }
                 } else if (data.data.llm_response.tool_calls && data.data.llm_response.tool_calls.length > 0) {
                   // If no text content but has tool calls, show tool execution status
                   const toolCallNames = data.data.llm_response.tool_calls.map((tool: any) => tool.name).join(', ');
                   stepMessage.push({
-                    id: data.data.step_id + '_tools',
+                    id: stepId + '_tools',
                     type: 'agent' as const,
                     content: `🔧 正在执行工具: ${toolCallNames}`,
-                    timestamp: new Date(data.data.timestamp),
+                    timestamp: new Date(stepTimestamp),
                     sessionId: sessionId,
-                    stepId: data.data.step_id,
+                    stepId: stepId,
                     metadata: {
                       model: data.data.llm_response.model,
                       usage: data.data.llm_response.usage,
@@ -360,22 +715,22 @@ function App() {
                   });
                   // Explicitly print tool calls array
                   stepMessage.push({
-                    id: data.data.step_id + '_tool_calls_list',
+                    id: stepId + '_tool_calls_list',
                     type: 'system' as const,
                     content: `tool_calls: ${JSON.stringify(data.data.llm_response.tool_calls)}`,
-                    timestamp: new Date(data.data.timestamp),
+                    timestamp: new Date(stepTimestamp),
                     sessionId: sessionId,
-                    stepId: data.data.step_id,
+                    stepId: stepId,
                   });
                 } else {
                   // Even if content is empty, show model thinking status
                   stepMessage.push({
-                    id: data.data.step_id + '_thinking',
+                    id: stepId + '_thinking',
                     type: 'agent' as const,
                     content: '🤔 AI正在思考中...',
-                    timestamp: new Date(data.data.timestamp),
+                    timestamp: new Date(stepTimestamp),
                     sessionId: sessionId,
-                    stepId: data.data.step_id,
+                    stepId: stepId,
                     metadata: {
                       model: data.data.llm_response.model,
                       usage: data.data.llm_response.usage,
@@ -395,45 +750,30 @@ function App() {
                 }
               }
               
-              // Add tool calls information
+              // Add tool calls information (simplified - backend only provides name and call_id)
               if (data.data.tool_calls && data.data.tool_calls.length > 0) {
-                const toolCallInfo = data.data.tool_calls.map((tool: any) => {
-                  const serialized = JSON.stringify(tool.parameters || {});
-                  const sanitized = serialized.replace(/\s*\n\s*/g, ' ');
-                  return `执行工具: ${tool.name}(${sanitized.slice(0, 100)}${sanitized.length > 100 ? '...' : ''})`;
-                }).join('\n');
+                const toolNames = data.data.tool_calls.map((tool: any) => tool.name).join(', ');
+                const toolCallCount = data.data.tool_calls.length;
                 
                 stepMessage.push({
-                  id: data.data.step_id + '_tools',
+                  id: stepId + '_tools',
                   type: 'system' as const,
-                  content: toolCallInfo,
-                  timestamp: new Date(data.data.timestamp),
+                  content: `🔧 执行工具 (${toolCallCount}): ${toolNames}`,
+                  timestamp: new Date(stepTimestamp),
                   sessionId: sessionId,
-                  stepId: data.data.step_id
+                  stepId: stepId
                 });
 
-                // Combined summary: name + command + path + tool_result.success
-                const toolCallsArr: any[] = Array.isArray(data.data.tool_calls) ? data.data.tool_calls : [];
-                const toolResultsArr: any[] = Array.isArray(data.data.tool_results) ? data.data.tool_results : [];
-                const resultsByName: Record<string, any> = {};
-                toolResultsArr.forEach((r: any) => { if (r && r.name) resultsByName[r.name] = r; });
-                const summaryLines = toolCallsArr.map((tool: any) => {
-                  const params = (tool && tool.parameters) ? tool.parameters : {};
-                  const cmd = params && (params.command ?? '-');
-                  const p = params && (params.path ?? (params.file_path ?? '-'));
-                  const res = resultsByName[tool?.name || ''] || {};
-                  const succ = (res.success !== undefined) ? String(!!res.success) : (res.error ? 'false' : (res.result !== undefined ? 'true' : 'unknown'));
-                  const line = `${tool?.name || 'unknown'} | command=${cmd} | path=${p} | success=${succ}`;
-                  return line.replace(/\s*\n\s*/g, ' ');
-                }).join('\n');
-                if (summaryLines) {
+                // Add tool results summary if available
+                if (data.data.tool_results_summary) {
+                  const { count = 0, success_count = 0, error_count = 0 } = data.data.tool_results_summary;
                   stepMessage.push({
-                    id: data.data.step_id + '_tool_summary',
+                    id: stepId + '_tool_results',
                     type: 'system' as const,
-                    content: summaryLines,
-                    timestamp: new Date(data.data.timestamp),
+                    content: `📊 工具执行结果: 总计${count}, 成功${success_count}, 失败${error_count}`,
+                    timestamp: new Date(stepTimestamp),
                     sessionId: sessionId,
-                    stepId: data.data.step_id
+                    stepId: stepId
                   });
                 }
               }
@@ -441,24 +781,24 @@ function App() {
               // Add reflection if available
               if (data.data.reflection) {
                 stepMessage.push({
-                  id: data.data.step_id + '_reflection',
+                  id: stepId + '_reflection',
                   type: 'system' as const,
                   content: `反思: ${data.data.reflection}`,
-                  timestamp: new Date(data.data.timestamp),
+                  timestamp: new Date(stepTimestamp),
                   sessionId: sessionId,
-                  stepId: data.data.step_id
+                  stepId: stepId
                 });
               }
 
               // Add lakeview summary if available
               if (data.data.lakeview_summary) {
                 stepMessage.push({
-                  id: data.data.step_id + '_lakeview',
+                  id: stepId + '_lakeview',
                   type: 'system' as const,
                   content: `Lakeview: ${data.data.lakeview_summary}`,
-                  timestamp: new Date(data.data.timestamp),
+                  timestamp: new Date(stepTimestamp),
                   sessionId: sessionId,
-                  stepId: data.data.step_id
+                  stepId: stepId
                 });
               }
               
@@ -539,84 +879,6 @@ function App() {
       console.error('Failed to run task:', error);
       toast.error('执行任务失败，请检查后端服务状态');
       setIsStreaming(false);
-    }
-    } else {
-      // Non-streaming execution
-      try {
-        // Add user message to session
-        updateSession(sessionId, {
-          messages: [...(sessions.find(s => s.id === sessionId)?.messages || []), {
-            id: Date.now().toString(),
-            type: 'user' as const,
-            content: message,
-            timestamp: new Date(),
-            sessionId: sessionId
-          }]
-        });
-
-        const result = await apiClient.runInteractiveTask({
-          session_id: sessionId,
-          task: message,
-          working_dir: workspaceRoot,
-          prompt: systemPrompt as any,
-        });
-        
-        setCurrentSteps(result.steps || []);
-        
-        // Add agent messages from result
-        if (result.steps && result.steps.length > 0) {
-          const agentMessages = result.steps
-            .filter(step => step.llm_response?.content_excerpt)
-            .map(step => ({
-              id: step.step_id,
-              type: 'agent' as const,
-              content: step.llm_response!.content_excerpt,
-              timestamp: new Date(step.timestamp),
-              sessionId: sessionId,
-              stepId: step.step_id,
-              metadata: {
-                tool_calls: step.tool_calls,
-                tool_results: step.tool_results,
-                reflection: step.reflection
-              }
-            }));
-          
-          if (agentMessages.length > 0) {
-            updateSession(sessionId, {
-              messages: [...(sessions.find(s => s.id === sessionId)?.messages || []), ...agentMessages]
-            });
-          }
-        }
-        
-        // Add completion message
-        if (result.final_result) {
-          updateSession(sessionId, {
-            messages: [...(sessions.find(s => s.id === sessionId)?.messages || []), {
-              id: 'completion_' + Date.now(),
-              type: 'system' as const,
-              content: '任务完成: ' + result.final_result,
-              timestamp: new Date(),
-              sessionId: sessionId
-            }]
-          });
-        }
-        
-        toast.success('任务完成');
-      } catch (error) {
-        console.error('Failed to run task:', error);
-        toast.error('执行任务失败，请检查后端服务状态');
-        
-        // Add error message to session
-        updateSession(sessionId, {
-          messages: [...(sessions.find(s => s.id === sessionId)?.messages || []), {
-            id: 'error_' + Date.now(),
-            type: 'error' as const,
-            content: '执行任务失败: ' + (error as Error).message,
-            timestamp: new Date(),
-            sessionId: sessionId
-          }]
-        });
-      }
     }
   };
 
@@ -740,46 +1002,15 @@ function App() {
           <div className="flex items-center gap-4">
             <h1 className="text-xl font-bold">AI IDE</h1>
             
-            {/* System Prompt Selection */}
-            <div className="flex items-center gap-2">
-              <label className="text-sm text-muted-foreground">系统提示词:</label>
-              <select 
-                value={systemPrompt} 
-                onChange={(e) => setSystemPrompt(e.target.value as any)}
-                className="px-2 py-1 border rounded text-sm bg-background"
-                disabled={isStreaming}
-              >
-                <option value="DOCUMENT_AGENT_SYSTEM_PROMPT">文档助手</option>
-                <option value="TRAE_AGENT_SYSTEM_PROMPT">工程助手</option>
-              </select>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <label className="text-sm text-muted-foreground">工作空间:</label>
-              <select
-                value={workspaceRoot}
-                onChange={(e) => handleWorkspaceSelect(e.target.value)}
-                className="px-2 py-1 border rounded text-sm bg-background"
-                disabled={isStreaming}
-              >
-                {workspaceOptions.length === 0 && (
-                  <option value={workspaceRoot}>{workspaceRoot}</option>
-                )}
-                {workspaceOptions.map(ws => (
-                  <option key={ws} value={ws}>{ws}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <label className="text-sm text-muted-foreground">模型配置:</label>
-              <button
-                onClick={() => { setIsModelModalOpen(true); setIsCreatingModel(false); }}
-                className="px-2 py-1 text-xs bg-secondary text-secondary-foreground rounded hover:bg-secondary/90"
-              >
-                管理模型
-              </button>
-            </div>
+            {/* System Settings Button - Replaces scattered controls */}
+            <button
+              onClick={() => setIsSystemSettingsOpen(true)}
+              className="flex items-center gap-2 px-3 py-2 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/90 transition-colors"
+              disabled={isStreaming}
+            >
+              <Settings className="h-4 w-4" />
+              系统设置
+            </button>
             
             {/* Session Info removed */}
           </div>
@@ -796,67 +1027,16 @@ function App() {
         </div>
         
         <div className="flex-1 flex overflow-hidden">
-          {/* Main Content */}
-        <div className="flex-1 flex">
-          {/* Left: FileTree (collapsible by width) */}
-          <div className={cn(leftCollapsed ? 'w-0' : 'w-64', "border-r bg-muted/30 flex flex-col overflow-hidden relative")}>
-            <FileTree onFileSelect={handleFileSelect} onCollapse={() => setLeftCollapsed(true)} />
-            {!leftCollapsed && (
-              <button
-                onClick={() => setLeftCollapsed(true)}
-                title="折叠文件"
-                className="absolute -right-3 top-2 z-50 bg-background border rounded-full h-6 w-6 flex items-center justify-center shadow"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </button>
-            )}
+          <div className="w-64 border-r bg-muted/30 flex flex-col overflow-hidden">
+            <FileTree onFileSelect={handleFileSelect} />
           </div>
-
-          {/* Middle: Markdown / Editor */}
-          <div className="flex-1 flex flex-col border-r">
-            <CodeEditor />
-          </div>
-
-          {/* Right: Chat (collapsible) */}
-          <div className={cn(chatCollapsed ? 'w-0' : 'w-[380px]', "flex flex-col overflow-hidden relative")}>            
-            {!chatCollapsed && (
-              <>
-                <ChatPanel 
-                  onSendMessage={handleSendMessage}
-                  isStreaming={isStreaming}
-                />
-                <div className="flex-1 overflow-y-auto">
-                  <StreamingConsole 
-                    steps={currentSteps}
-                    isStreaming={isStreaming}
-                    messages={sessions.find(s => s.id === currentSessionId)?.messages || []}
-                    onCollapse={() => setChatCollapsed(true)}
-                  />
-                </div>
-              </>
-            )}
+          <div className="flex-1 flex flex-col">
+            <div className="flex-1 border-b">
+              <CodeEditor />
+            </div>
+            
           </div>
         </div>
-
-        {leftCollapsed && (
-          <button
-            onClick={() => setLeftCollapsed(false)}
-            title="展开文件"
-            className="fixed left-2 top-2 z-50 bg-primary text-primary-foreground rounded-full h-6 w-6 shadow flex items-center justify-center"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </button>
-        )}
-
-        {chatCollapsed && (
-          <button
-            onClick={() => setChatCollapsed(false)}
-            title="展开对话"
-            className="fixed right-2 top-2 z-50 bg-primary text-primary-foreground rounded-full h-6 w-6 shadow flex items-center justify-center"
-          >
-            <ChevronRight className="h-4 w-4" />
-          </button>
-        )}
 
         {isModelModalOpen && (
           <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
@@ -954,8 +1134,68 @@ function App() {
             </div>
           </div>
         )}
-        </div>
+
+        {isCommandOpen && (
+          <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={() => setIsCommandOpen(false)}>
+            <div className="bg-background border rounded-md shadow-xl w-[600px] max-w-[90vw] p-4" onClick={(e) => e.stopPropagation()}>
+              <input
+                autoFocus
+                value={commandText}
+                onChange={(e) => setCommandText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && commandText.trim()) {
+                    handleSendMessage(commandText.trim(), true);
+                    setCommandText('');
+                    setIsCommandOpen(false);
+                  } else if (e.key === 'Escape') {
+                    setIsCommandOpen(false);
+                  }
+                }}
+                placeholder="输入命令后按回车提交 (Cmd+Shift+K 打开)"
+                className="w-full px-3 py-2 border rounded text-sm bg-background"
+              />
+            </div>
+          </div>
+        )}
+
+        {isConsoleOpen && (
+          <div className="fixed inset-0 z-[60] pointer-events-none">
+            <div className="absolute inset-0 flex items-end justify-stretch pointer-events-none">
+              <div className="w-full h-[40%] bg-background border-t shadow-lg pointer-events-auto">
+                <StreamingConsole 
+                  steps={currentSteps}
+                  isStreaming={isStreaming}
+                  messages={sessions.find(s => s.id === currentSessionId)?.messages || []}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+        
+            {/* System Settings Dialog */}
+            <SystemSettings
+              open={isSystemSettingsOpen}
+              onOpenChange={setIsSystemSettingsOpen}
+              systemPrompts={systemPrompts}
+              currentPrompt={systemPrompt || ''}
+              onPromptChange={setSystemPrompt}
+              onSavePrompt={handleSaveSystemPrompt}
+              onDeletePrompt={handleDeleteSystemPrompt}
+              modelConfig={{
+                provider: selectedProvider,
+                model: modelName,
+                apiKey: apiKey,
+                baseUrl: modelBaseUrl
+              }}
+              onModelConfigChange={handleModelConfigChange}
+              qualityReviewEnabled={qualityReviewEnabled}
+              qualityReviewRules={qualityReviewRules}
+              onQualityReviewEnabledChange={setQualityReviewEnabled}
+              onQualityReviewRulesChange={setQualityReviewRules}
+            />
       </div>
     </ErrorBoundary>
   );
 }
+
+export default App;

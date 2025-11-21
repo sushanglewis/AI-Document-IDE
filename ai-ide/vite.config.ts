@@ -37,6 +37,11 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path,
       },
+      '/health': {
+        target: 'http://localhost:8090',
+        changeOrigin: true,
+        rewrite: (path) => path,
+      },
     },
     cors: true,
   },
