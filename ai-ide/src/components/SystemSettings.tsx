@@ -6,7 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Textarea } from './ui/textarea';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './ui/dialog';
-import { Settings, Plus, Trash2, Key, BrainCircuit } from 'lucide-react';
+import { Settings, Plus, Key, BrainCircuit } from 'lucide-react';
 
 interface SystemPrompt {
   id: string;
@@ -43,10 +43,7 @@ export function SystemSettings({
   open,
   onOpenChange,
   systemPrompts,
-  currentPrompt,
-  onPromptChange,
   onSavePrompt,
-  onDeletePrompt,
   modelConfig,
   onModelConfigChange,
   qualityReviewEnabled = false,
@@ -93,7 +90,7 @@ export function SystemSettings({
           <TabsList className="grid w-full grid-cols-2">
             <TabsTrigger value="prompts" className="flex items-center gap-2">
               <BrainCircuit className="h-4 w-4" />
-              系统提示词
+              模式配置
             </TabsTrigger>
             <TabsTrigger value="model" className="flex items-center gap-2">
               <Key className="h-4 w-4" />
@@ -106,7 +103,6 @@ export function SystemSettings({
               <TabsContent value="prompts" className="mt-0 space-y-4">
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-semibold">预设提示词</h3>
                     <Button 
                       size="sm" 
                       onClick={() => setNewPromptDialogOpen(true)}
@@ -175,7 +171,11 @@ export function SystemSettings({
                   
                   <div className="grid gap-3">
                     {systemPrompts.map((prompt) => (
-                      <div key={prompt.id} className={"border rounded-lg p-3 flex items-center justify-between"}>
+                      <div
+                        key={prompt.id}
+                        className={"border rounded-lg p-3 flex items-center justify-between cursor-pointer " + (prompt.content === currentPrompt ? 'bg-accent' : '')}
+                        onClick={() => onPromptChange(prompt.content)}
+                      >
                         <span className="text-sm font-medium">{prompt.name}</span>
                         <div className="flex items-center gap-2">
                           <Button size="sm" variant="outline" onClick={() => onViewPrompt?.(prompt.name)}>查看详情</Button>

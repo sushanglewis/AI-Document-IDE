@@ -87,6 +87,8 @@ function App() {
   const [isConsoleOpen, setIsConsoleOpen] = React.useState(false);
   const [qualityReviewEnabled, setQualityReviewEnabled] = React.useState<boolean>(false);
   const [qualityReviewRules, setQualityReviewRules] = React.useState<string>("");
+  const [promptView, setPromptView] = React.useState<{open: boolean; name: string; content: string} | null>(null);
+  const [promptEdit, setPromptEdit] = React.useState<{open: boolean; name: string; content: string} | null>(null);
 
   // Initialize workspace and create initial session
   React.useEffect(() => {
@@ -155,11 +157,14 @@ function App() {
       if ((e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setIsCommandOpen(true);
+        if (!currentSessionId) {
+          setCommandText('-create session');
+        }
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [currentSessionId]);
 
   React.useEffect(() => {
     const onToggle = (e: KeyboardEvent) => {
@@ -1159,7 +1164,7 @@ function App() {
                     setIsCommandOpen(false);
                   }
                 }}
-                placeholder="输入命令后按回车提交 (Cmd+Shift+K 打开)"
+                placeholder="输入命令后按回车提交 (Cmd+Shift+K 打开) - create session 来创建新会话"
                 className="w-full px-3 py-2 border rounded text-sm bg-background"
               />
             </div>
@@ -1203,33 +1208,88 @@ function App() {
               onViewPrompt={async (name: string) => {
                 try {
                   const full = await apiClient.getStoredPrompt(name);
-                  toast.info(`详情: ${full.content.substring(0, 200)}`);
+                  setPromptView({ open: true, name: full.name, content: full.content });
                 } catch {
                   toast.error('获取详情失败');
                 }
               }}
               onEditPrompt={async (name: string) => {
-                const content = prompt('请输入新的内容');
-                if (typeof content === 'string') {
-                  try {
-                    await apiClient.writeStoredPrompt(name, content);
-                    const list = await apiClient.listStoredPrompts();
-                    const items = await Promise.all(list.map(async (p) => {
-                      try {
-                        const full = await apiClient.getStoredPrompt(p.name);
-                        return { id: String(full.id), name: full.name, content: full.content };
-                      } catch {
-                        return { id: String(p.id), name: p.name, content: '' };
-                      }
-                    }));
-                    setSystemPrompts(items);
-                    toast.success('提示词已更新');
-                  } catch {
-                    toast.error('更新失败');
-                  }
+                try {
+                  const full = await apiClient.getStoredPrompt(name);
+                  setPromptEdit({ open: true, name: full.name, content: full.content });
+                } catch {
+                  toast.error('获取详情失败');
                 }
               }}
             />
+
+      {/* Prompt View Modal */}
+      {promptView?.open && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setPromptView(null)}>
+          <div className="bg-background border rounded-md shadow-xl w-[720px] max-w-[90vw]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b">
+              <h2 className="text-lg font-semibold">提示词详情</h2>
+              <button onClick={() => setPromptView(null)} className="text-sm text-muted-foreground">关闭</button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div className="text-sm text-muted-foreground">名称</div>
+              <div className="text-sm">{promptView.name}</div>
+              <div className="text-sm text-muted-foreground mt-2">内容</div>
+              <pre className="text-sm whitespace-pre-wrap break-words border rounded p-3 max-h-[300px] overflow-auto">{promptView.content}</pre>
+              <div className="flex justify-end">
+                <button onClick={() => setPromptView(null)} className="px-3 py-1 text-sm bg-muted rounded">关闭</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Prompt Edit Modal */}
+      {promptEdit?.open && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setPromptEdit(null)}>
+          <div className="bg-background border rounded-md shadow-xl w-[720px] max-w-[90vw]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b">
+              <h2 className="text-lg font-semibold">修改提示词</h2>
+              <button onClick={() => setPromptEdit(null)} className="text-sm text-muted-foreground">关闭</button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div className="text-sm text-muted-foreground">名称</div>
+              <div className="text-sm">{promptEdit.name}</div>
+              <div className="text-sm text-muted-foreground mt-2">内容</div>
+              <textarea
+                value={promptEdit.content}
+                onChange={(e) => setPromptEdit({ ...promptEdit, content: e.target.value })}
+                className="w-full border rounded p-2 text-sm min-h-[160px]"
+              />
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setPromptEdit(null)} className="px-3 py-1 text-sm bg-muted rounded">取消</button>
+                <button
+                  onClick={async () => {
+                    try {
+                      await apiClient.writeStoredPrompt(promptEdit.name, promptEdit.content);
+                      const list = await apiClient.listStoredPrompts();
+                      const items = await Promise.all(list.map(async (p) => {
+                        try {
+                          const full = await apiClient.getStoredPrompt(p.name);
+                          return { id: String(full.id), name: full.name, content: full.content };
+                        } catch {
+                          return { id: String(p.id), name: p.name, content: '' };
+                        }
+                      }));
+                      setSystemPrompts(items);
+                      toast.success('提示词已更新');
+                      setPromptEdit(null);
+                    } catch {
+                      toast.error('更新失败');
+                    }
+                  }}
+                  className="px-3 py-1 text-sm bg-primary text-primary-foreground rounded"
+                >保存</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       </div>
     </ErrorBoundary>
   );
