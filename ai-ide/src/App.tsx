@@ -88,7 +88,7 @@ function App() {
   const [qualityReviewEnabled, setQualityReviewEnabled] = React.useState<boolean>(false);
   const [qualityReviewRules, setQualityReviewRules] = React.useState<string>("");
   const [promptView, setPromptView] = React.useState<{open: boolean; name: string; content: string} | null>(null);
-  const [promptEdit, setPromptEdit] = React.useState<{open: boolean; name: string; content: string} | null>(null);
+  const [promptEdit, setPromptEdit] = React.useState<{open: boolean; name: string; content: string; enable_quality_review?: boolean; quality_review_rules?: string} | null>(null);
 
   // Initialize workspace and create initial session
   React.useEffect(() => {
@@ -1216,7 +1216,9 @@ function App() {
               onEditPrompt={async (name: string) => {
                 try {
                   const full = await apiClient.getStoredPrompt(name);
-                  setPromptEdit({ open: true, name: full.name, content: full.content });
+                  let payload: any = {};
+                  try { payload = JSON.parse(full.content); } catch {}
+                  setPromptEdit({ open: true, name: full.name, content: (payload.text ?? full.content), enable_quality_review: !!payload.enable_quality_review, quality_review_rules: (payload.quality_review_rules ?? '') });
                 } catch {
                   toast.error('获取详情失败');
                 }
@@ -1228,14 +1230,24 @@ function App() {
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setPromptView(null)}>
           <div className="bg-background border rounded-md shadow-xl w-[720px] max-w-[90vw]" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b">
-              <h2 className="text-lg font-semibold">提示词详情</h2>
+              <h2 className="text-lg font-semibold">模式详情</h2>
               <button onClick={() => setPromptView(null)} className="text-sm text-muted-foreground">关闭</button>
             </div>
             <div className="p-4 space-y-3">
               <div className="text-sm text-muted-foreground">名称</div>
               <div className="text-sm">{promptView.name}</div>
               <div className="text-sm text-muted-foreground mt-2">内容</div>
-              <pre className="text-sm whitespace-pre-wrap break-words border rounded p-3 max-h-[300px] overflow-auto">{promptView.content}</pre>
+              <pre className="text-sm whitespace-pre-wrap break-words border rounded p-3 max-h-[300px] overflow-auto">{(() => { try { const o = JSON.parse(promptView.content); return String(o.text ?? promptView.content); } catch { return promptView.content; } })()}</pre>
+              <div className="grid grid-cols-2 gap-4 mt-2">
+                <div>
+                  <div className="text-sm text-muted-foreground">是否开启质量审查</div>
+                  <div className="text-sm">{(() => { try { const o = JSON.parse(promptView.content); return o.enable_quality_review ? '是' : '否'; } catch { return '否'; } })()}</div>
+                </div>
+                <div>
+                  <div className="text-sm text-muted-foreground">审查规则</div>
+                  <div className="text-sm break-words">{(() => { try { const o = JSON.parse(promptView.content); return o.quality_review_rules || ''; } catch { return ''; } })()}</div>
+                </div>
+              </div>
               <div className="flex justify-end">
                 <button onClick={() => setPromptView(null)} className="px-3 py-1 text-sm bg-muted rounded">关闭</button>
               </div>
@@ -1249,7 +1261,7 @@ function App() {
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setPromptEdit(null)}>
           <div className="bg-background border rounded-md shadow-xl w-[720px] max-w-[90vw]" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b">
-              <h2 className="text-lg font-semibold">修改提示词</h2>
+              <h2 className="text-lg font-semibold">修改模式</h2>
               <button onClick={() => setPromptEdit(null)} className="text-sm text-muted-foreground">关闭</button>
             </div>
             <div className="p-4 space-y-3">
@@ -1261,12 +1273,25 @@ function App() {
                 onChange={(e) => setPromptEdit({ ...promptEdit, content: e.target.value })}
                 className="w-full border rounded p-2 text-sm min-h-[160px]"
               />
+              <div className="flex items-center gap-2 mt-2">
+                <input type="checkbox" checked={!!promptEdit.enable_quality_review} onChange={(e) => setPromptEdit({ ...promptEdit, enable_quality_review: e.target.checked })} />
+                <span className="text-sm">启用质量审查</span>
+              </div>
+              <div className="space-y-2">
+                <div className="text-sm text-muted-foreground">审查规则</div>
+                <textarea value={promptEdit.quality_review_rules || ''} onChange={(e) => setPromptEdit({ ...promptEdit, quality_review_rules: e.target.value })} className="w-full border rounded p-2 text-sm min-h-[100px]" />
+              </div>
               <div className="flex justify-end gap-2">
                 <button onClick={() => setPromptEdit(null)} className="px-3 py-1 text-sm bg-muted rounded">取消</button>
                 <button
                   onClick={async () => {
                     try {
-                      await apiClient.writeStoredPrompt(promptEdit.name, promptEdit.content);
+                      const payload = {
+                        text: promptEdit.content,
+                        enable_quality_review: !!promptEdit.enable_quality_review,
+                        quality_review_rules: promptEdit.quality_review_rules || ''
+                      };
+                      await apiClient.writeStoredPrompt(promptEdit.name, JSON.stringify(payload));
                       const list = await apiClient.listStoredPrompts();
                       const items = await Promise.all(list.map(async (p) => {
                         try {

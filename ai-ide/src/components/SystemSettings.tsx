@@ -43,6 +43,8 @@ export function SystemSettings({
   open,
   onOpenChange,
   systemPrompts,
+  currentPrompt,
+  onPromptChange,
   onSavePrompt,
   modelConfig,
   onModelConfigChange,
@@ -59,10 +61,15 @@ export function SystemSettings({
 
   const handleSaveNewPrompt = () => {
     if (newPrompt.name.trim() && newPrompt.content.trim()) {
+      const payload = {
+        text: newPrompt.content.trim(),
+        enable_quality_review: !!qualityReviewEnabled,
+        quality_review_rules: qualityReviewRules || ''
+      };
       const prompt: SystemPrompt = {
         id: Date.now().toString(),
         name: newPrompt.name.trim(),
-        content: newPrompt.content.trim()
+        content: JSON.stringify(payload)
       };
       onSavePrompt(prompt);
       setNewPrompt({ name: '', content: '' });
@@ -117,11 +124,11 @@ export function SystemSettings({
                     <Dialog open={newPromptDialogOpen} onOpenChange={setNewPromptDialogOpen}>
                       <DialogContent>
                         <DialogHeader>
-                          <DialogTitle>新建系统提示词</DialogTitle>
+                          <DialogTitle>新建模式</DialogTitle>
                         </DialogHeader>
                         <div className="space-y-4">
                           <div className="space-y-2">
-                            <Label htmlFor="prompt-name">提示词名称</Label>
+                            <Label htmlFor="prompt-name">模式名称</Label>
                             <Input
                               id="prompt-name"
                               value={newPrompt.name}
@@ -130,7 +137,7 @@ export function SystemSettings({
                             />
                           </div>
                           <div className="space-y-2">
-                            <Label htmlFor="prompt-content">提示词内容</Label>
+                            <Label htmlFor="prompt-content">模式内容</Label>
                             <Textarea
                               id="prompt-content"
                               value={newPrompt.content}
@@ -174,12 +181,24 @@ export function SystemSettings({
                       <div
                         key={prompt.id}
                         className={"border rounded-lg p-3 flex items-center justify-between cursor-pointer " + (prompt.content === currentPrompt ? 'bg-accent' : '')}
-                        onClick={() => onPromptChange(prompt.content)}
+                        onClick={() => {
+                          let contentText = prompt.content;
+                          try {
+                            const obj = JSON.parse(prompt.content);
+                            if (typeof obj.text === 'string') contentText = obj.text;
+                            if (typeof obj.enable_quality_review === 'boolean') onQualityReviewEnabledChange?.(obj.enable_quality_review);
+                            if (typeof obj.quality_review_rules === 'string') onQualityReviewRulesChange?.(obj.quality_review_rules);
+                          } catch {}
+                          onPromptChange(contentText);
+                        }}
                       >
                         <span className="text-sm font-medium">{prompt.name}</span>
                         <div className="flex items-center gap-2">
                           <Button size="sm" variant="outline" onClick={() => onViewPrompt?.(prompt.name)}>查看详情</Button>
                           <Button size="sm" onClick={() => onEditPrompt?.(prompt.name)}>修改</Button>
+                          <Button size="sm" variant="ghost" onClick={async () => {
+                            await fetch('/storage/prompt/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: prompt.name }) });
+                          }}>删除</Button>
                         </div>
                       </div>
                     ))}

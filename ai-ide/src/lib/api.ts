@@ -477,6 +477,11 @@ class ApiClient {
     return res.data as { id: number; name: string };
   }
 
+  async deleteStoredPrompt(name: string): Promise<{ deleted: boolean }> {
+    const res = await this.client.post('/storage/prompt/delete', { name });
+    return res.data as { deleted: boolean };
+  }
+
   async uploadFile(sessionId: string, file: File, relativePath?: string): Promise<{ path: string; container_path: string; filename: string; size?: number }>{
     const form = new FormData();
     form.append('file', file);
