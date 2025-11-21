@@ -35,6 +35,8 @@ interface SystemSettingsProps {
   qualityReviewRules?: string;
   onQualityReviewEnabledChange?: (enabled: boolean) => void;
   onQualityReviewRulesChange?: (rules: string) => void;
+  onViewPrompt?: (name: string) => void;
+  onEditPrompt?: (name: string) => void;
 }
 
 export function SystemSettings({
@@ -51,6 +53,8 @@ export function SystemSettings({
   qualityReviewRules = '',
   onQualityReviewEnabledChange,
   onQualityReviewRulesChange,
+  onViewPrompt,
+  onEditPrompt,
 }: SystemSettingsProps) {
   const [activeTab, setActiveTab] = useState('prompts');
   const [newPrompt, setNewPrompt] = useState({ name: '', content: '' });
@@ -171,29 +175,11 @@ export function SystemSettings({
                   
                   <div className="grid gap-3">
                     {systemPrompts.map((prompt) => (
-                      <div key={prompt.id} className={"border rounded-lg p-4 space-y-3 " + (prompt.content === currentPrompt ? 'bg-accent' : '')}>
-                        <div className="flex items-start justify-between">
-                          <div className="space-y-1 flex-1">
-                            <h4 className="font-medium">{prompt.name}</h4>
-                            <p className="text-sm text-muted-foreground">{prompt.content}</p>
-                          </div>
-                          <div className="flex gap-2 ml-4">
-                            <Button
-                              size="sm"
-                              variant={prompt.content === currentPrompt ? 'default' : 'outline'}
-                              onClick={() => onPromptChange(prompt.content)}
-                            >
-                              使用
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => onDeletePrompt(prompt.id)}
-                              className="text-destructive hover:text-destructive"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
+                      <div key={prompt.id} className={"border rounded-lg p-3 flex items-center justify-between"}>
+                        <span className="text-sm font-medium">{prompt.name}</span>
+                        <div className="flex items-center gap-2">
+                          <Button size="sm" variant="outline" onClick={() => onViewPrompt?.(prompt.name)}>查看详情</Button>
+                          <Button size="sm" onClick={() => onEditPrompt?.(prompt.name)}>修改</Button>
                         </div>
                       </div>
                     ))}

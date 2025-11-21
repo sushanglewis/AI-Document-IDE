@@ -462,6 +462,21 @@ class ApiClient {
     }
   }
 
+  async listStoredPrompts(): Promise<Array<{ id: number; name: string }>> {
+    const res = await this.client.get('/storage/prompt/list');
+    return (res.data?.prompts || []) as Array<{ id: number; name: string }>;
+  }
+
+  async getStoredPrompt(name: string): Promise<{ id: number; name: string; content: string }> {
+    const res = await this.client.post('/storage/prompt/get', { name });
+    return res.data as { id: number; name: string; content: string };
+  }
+
+  async writeStoredPrompt(name: string, content: string): Promise<{ id: number; name: string }> {
+    const res = await this.client.post('/storage/prompt/write', { name, content });
+    return res.data as { id: number; name: string };
+  }
+
   async uploadFile(sessionId: string, file: File, relativePath?: string): Promise<{ path: string; container_path: string; filename: string; size?: number }>{
     const form = new FormData();
     form.append('file', file);

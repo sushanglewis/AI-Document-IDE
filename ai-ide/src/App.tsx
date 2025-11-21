@@ -121,12 +121,15 @@ function App() {
         }
 
         try {
-          const docPrompt = await apiClient.getPrompt('DOCUMENT_AGENT_SYSTEM_PROMPT');
-          const devPrompt = await apiClient.getPrompt('TRAE_AGENT_SYSTEM_PROMPT');
-          const items = [
-            { id: 'DOCUMENT_AGENT_SYSTEM_PROMPT', name: '文档助理模式', content: docPrompt },
-            { id: 'TRAE_AGENT_SYSTEM_PROMPT', name: '代码专家模式', content: devPrompt }
-          ].filter(p => p.content && p.content.trim().length > 0);
+          const list = await apiClient.listStoredPrompts();
+          const items = await Promise.all(list.map(async (p) => {
+            try {
+              const full = await apiClient.getStoredPrompt(p.name);
+              return { id: String(full.id), name: full.name, content: full.content };
+            } catch {
+              return { id: String(p.id), name: p.name, content: '' };
+            }
+          }));
           setSystemPrompts(items);
         } catch {}
       } catch (error) {
@@ -198,12 +201,23 @@ function App() {
   };
 
   // System Settings Functions
-  const handleSaveSystemPrompt = (prompt: {id: string, name: string, content: string}) => {
-    setSystemPrompts(prev => {
-      const others = prev.filter(p => p.id !== prompt.id);
-      return [...others, prompt];
-    });
-    toast.success('系统提示词已保存');
+  const handleSaveSystemPrompt = async (prompt: {id: string, name: string, content: string}) => {
+    try {
+      await apiClient.writeStoredPrompt(prompt.name, prompt.content);
+      const list = await apiClient.listStoredPrompts();
+      const items = await Promise.all(list.map(async (p) => {
+        try {
+          const full = await apiClient.getStoredPrompt(p.name);
+          return { id: String(full.id), name: full.name, content: full.content };
+        } catch {
+          return { id: String(p.id), name: p.name, content: '' };
+        }
+      }));
+      setSystemPrompts(items);
+      toast.success('系统提示词已保存');
+    } catch (e) {
+      toast.error('保存失败');
+    }
   };
 
   const handleDeleteSystemPrompt = (id: string) => {
@@ -267,6 +281,11 @@ function App() {
   };
 
   const handleSendMessage = async (message: string, useStreaming: boolean) => {
+    if (message.trim() === '-create session') {
+      await createNewSession();
+      toast.success('新会话已创建');
+      return;
+    }
     let sessionId = currentSessionId;
     const makeMsgId = () => (globalThis.crypto && 'randomUUID' in globalThis.crypto) ? (globalThis.crypto as any).randomUUID() : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
     
@@ -1001,27 +1020,16 @@ function App() {
         <div className="flex items-center justify-between p-4 border-b bg-background">
           <div className="flex items-center gap-4">
             <h1 className="text-xl font-bold">AI IDE</h1>
-            
-            {/* System Settings Button - Replaces scattered controls */}
+          </div>
+          <div className="flex items-center gap-2">
             <button
               onClick={() => setIsSystemSettingsOpen(true)}
-              className="flex items-center gap-2 px-3 py-2 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/90 transition-colors"
+              className="p-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/90 transition-colors"
               disabled={isStreaming}
+              aria-label="系统设置"
+              title="系统设置"
             >
               <Settings className="h-4 w-4" />
-              系统设置
-            </button>
-            
-            {/* Session Info removed */}
-          </div>
-          
-          <div className="flex items-center gap-2">
-            <button 
-              onClick={() => createNewSession()}
-              className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90"
-              disabled={isStreaming}
-            >
-              新建会话
             </button>
           </div>
         </div>
@@ -1031,7 +1039,7 @@ function App() {
             <FileTree onFileSelect={handleFileSelect} />
           </div>
           <div className="flex-1 flex flex-col">
-            <div className="flex-1 border-b">
+            <div className="flex-1 border-b overflow-auto">
               <CodeEditor />
             </div>
             
@@ -1161,7 +1169,7 @@ function App() {
         {isConsoleOpen && (
           <div className="fixed inset-0 z-[60] pointer-events-none">
             <div className="absolute inset-0 flex items-end justify-stretch pointer-events-none">
-              <div className="w-full h-[40%] bg-background border-t shadow-lg pointer-events-auto">
+              <div className="w-full h-[40%] bg-background border-t shadow-lg pointer-events-auto overflow-auto">
                 <StreamingConsole 
                   steps={currentSteps}
                   isStreaming={isStreaming}
@@ -1192,6 +1200,35 @@ function App() {
               qualityReviewRules={qualityReviewRules}
               onQualityReviewEnabledChange={setQualityReviewEnabled}
               onQualityReviewRulesChange={setQualityReviewRules}
+              onViewPrompt={async (name: string) => {
+                try {
+                  const full = await apiClient.getStoredPrompt(name);
+                  toast.info(`详情: ${full.content.substring(0, 200)}`);
+                } catch {
+                  toast.error('获取详情失败');
+                }
+              }}
+              onEditPrompt={async (name: string) => {
+                const content = prompt('请输入新的内容');
+                if (typeof content === 'string') {
+                  try {
+                    await apiClient.writeStoredPrompt(name, content);
+                    const list = await apiClient.listStoredPrompts();
+                    const items = await Promise.all(list.map(async (p) => {
+                      try {
+                        const full = await apiClient.getStoredPrompt(p.name);
+                        return { id: String(full.id), name: full.name, content: full.content };
+                      } catch {
+                        return { id: String(p.id), name: p.name, content: '' };
+                      }
+                    }));
+                    setSystemPrompts(items);
+                    toast.success('提示词已更新');
+                  } catch {
+                    toast.error('更新失败');
+                  }
+                }
+              }}
             />
       </div>
     </ErrorBoundary>
