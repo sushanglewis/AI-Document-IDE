@@ -1,5 +1,5 @@
 import React from 'react';
-import { Settings } from 'lucide-react';
+import { Settings, File as FileIcon } from 'lucide-react';
 import { Toaster } from 'sonner';
 import { FileTree } from './components/FileTree';
 import { CodeEditor } from './components/CodeEditor';
@@ -80,10 +80,12 @@ function App() {
   const [selectedModelName, setSelectedModelName] = React.useState<string>('Xinference-OpenRouter-Qwen3');
   const [isSystemSettingsOpen, setIsSystemSettingsOpen] = React.useState(false);
   const [systemPrompts, setSystemPrompts] = React.useState<Array<{id: string, name: string, content: string}>>([]);
+  const [selectedPromptName, setSelectedPromptName] = React.useState<string | undefined>(undefined);
   const [isModelModalOpen, setIsModelModalOpen] = React.useState(false);
   const [isCreatingModel, setIsCreatingModel] = React.useState(false);
   const [isCommandOpen, setIsCommandOpen] = React.useState(false);
   const [commandText, setCommandText] = React.useState('');
+  const [commandAttachments, setCommandAttachments] = React.useState<Array<{display: string; token: string}>>([]);
   const [isConsoleOpen, setIsConsoleOpen] = React.useState(false);
   const [qualityReviewEnabled, setQualityReviewEnabled] = React.useState<boolean>(false);
   const [qualityReviewRules, setQualityReviewRules] = React.useState<string>("");
@@ -126,14 +128,22 @@ function App() {
           const list = await apiClient.listStoredPrompts();
           const items = await Promise.all(list.map(async (p) => {
             try {
-              const full = await apiClient.getStoredPrompt(p.name);
+              const full = await apiClient.getStoredPromptById(p.id);
               return { id: String(full.id), name: full.name, content: full.content };
             } catch {
               return { id: String(p.id), name: p.name, content: '' };
             }
           }));
           setSystemPrompts(items);
-        } catch {}
+          if (items.length > 0) {
+            setSelectedPromptName(items[0].name);
+            try {
+              const obj = JSON.parse(items[0].content);
+              if (typeof obj.enable_quality_review === 'boolean') setQualityReviewEnabled(!!obj.enable_quality_review);
+              if (typeof obj.quality_review_rules === 'string') setQualityReviewRules(obj.quality_review_rules);
+            } catch { void 0; }
+          }
+        } catch { void 0; }
       } catch (error) {
         console.error('Failed to initialize app:', error);
         setIsBackendAvailable(false);
@@ -212,22 +222,43 @@ function App() {
       const list = await apiClient.listStoredPrompts();
       const items = await Promise.all(list.map(async (p) => {
         try {
-          const full = await apiClient.getStoredPrompt(p.name);
+          const full = await apiClient.getStoredPromptById(p.id);
           return { id: String(full.id), name: full.name, content: full.content };
         } catch {
           return { id: String(p.id), name: p.name, content: '' };
         }
       }));
       setSystemPrompts(items);
+      setSelectedPromptName(prompt.name);
       toast.success('系统提示词已保存');
     } catch (e) {
       toast.error('保存失败');
     }
   };
 
-  const handleDeleteSystemPrompt = (id: string) => {
-    setSystemPrompts(prev => prev.filter(p => p.id !== id));
-    toast.success('系统提示词已删除');
+  const handleDeleteSystemPrompt = async (name: string) => {
+    try {
+      await apiClient.deleteStoredPrompt(name);
+      const list = await apiClient.listStoredPrompts();
+      const items = await Promise.all(list.map(async (p) => {
+        try {
+          const full = await apiClient.getStoredPromptById(p.id);
+          return { id: String(full.id), name: full.name, content: full.content };
+        } catch {
+          return { id: String(p.id), name: p.name, content: '' };
+        }
+      }));
+      setSystemPrompts(items);
+      if (selectedPromptName === name) {
+        setSelectedPromptName(undefined);
+        setSystemPrompt('DOCUMENT_AGENT_SYSTEM_PROMPT');
+        setQualityReviewEnabled(false);
+        setQualityReviewRules('');
+      }
+      toast.success('模式配置已删除');
+    } catch {
+      toast.error('删除失败');
+    }
   };
 
 
@@ -257,6 +288,7 @@ function App() {
         model_base_url: chosen.baseUrl,
         api_key: chosen.apiKey,
         prompt: systemPrompt as any,
+        agent_mode_config: { mode_name: selectedPromptName, system_prompt: (selectedPromptName || systemPrompt) as any },
         console_type: 'lakeview',
         enable_quality_review: qualityReviewEnabled,
         quality_review_rules: qualityReviewRules,
@@ -276,7 +308,6 @@ function App() {
       
       setSessions([newSession]);
       setCurrentSession(session.session_id);
-      toast.success('新会话已创建');
       return session.session_id;
     } catch (error) {
       console.error('Failed to create session:', error);
@@ -289,6 +320,23 @@ function App() {
     if (message.trim() === '-create session') {
       await createNewSession();
       toast.success('新会话已创建');
+      return;
+    }
+    if (message.trim() === '-kill') {
+      if (!currentSessionId) {
+        toast.error('无活动会话可关闭');
+        return;
+      }
+      try {
+        await apiClient.closeInteractiveSession(currentSessionId);
+        updateSession(currentSessionId, { status: 'completed' });
+        setCurrentSession('');
+        setIsStreaming(false);
+        setCurrentSteps([]);
+        toast.success('当前会话已关闭');
+      } catch (e) {
+        toast.error('关闭会话失败');
+      }
       return;
     }
     let sessionId = currentSessionId;
@@ -306,23 +354,54 @@ function App() {
       setCurrentSteps([]);
       
       try {
-        // Add user message to session
+        const extractAttachments = (text: string) => {
+          const out: string[] = [];
+          const ws = Array.from(text.matchAll(/\[workspace:([^\]]+)\]/g)).map(m => m[1]);
+          ws.forEach(p => {
+            const rel = p.replace(/^\/workspace\/?/, '');
+            out.push(`file:${rel}`);
+          });
+          const on = Array.from(text.matchAll(/\[online:documentId=([^ \]]+)/g)).map(m => m[1]);
+          on.forEach(id => out.push(`online:${id}`));
+          return out;
+        };
+        const stripTokens = (text: string) => text.replace(/\[[^\]]+\]/g, '').trim();
+        const attachments = extractAttachments(message);
+        const clean = stripTokens(message);
+        const hashId = (s: string) => { let h = 5381; for (let i = 0; i < s.length; i++) { h = ((h << 5) + h) + s.charCodeAt(i); h &= 0xffffffff; } return Math.abs(h).toString(16); };
+        const userId = `user_${hashId('user:user')}`;
+        const agentId = `agent_${hashId(selectedModelName || modelName)}`;
         updateSession(sessionId, {
           messages: [...(sessions.find(s => s.id === sessionId)?.messages || []), {
-            id: Date.now().toString(),
+            id: makeMsgId(),
             type: 'user' as const,
-            content: message,
+            content: clean,
+            attachments,
             timestamp: new Date(),
-            sessionId: sessionId
+            sessionId: sessionId,
+            metadata: { user_id: userId, agent_id: agentId }
           }]
         });
+
+        const selectedPromptText = (() => {
+          if (!selectedPromptName) return undefined;
+          const found = systemPrompts.find(p => p.name === selectedPromptName);
+          if (!found) return undefined;
+          try {
+            const obj = JSON.parse(found.content);
+            return typeof obj.text === 'string' ? obj.text : found.content;
+          } catch {
+            return found.content;
+          }
+        })();
 
         await apiClient.runInteractiveTaskStream(
           {
             session_id: sessionId,
             task: message,
             working_dir: workspaceRoot,
-            prompt: systemPrompt as any,
+            prompt: (selectedPromptText || systemPrompt) as any,
+            agent_mode_config: { mode_name: selectedPromptName, system_prompt: (selectedPromptText || systemPrompt) as any },
             enable_quality_review: qualityReviewEnabled,
             quality_review_rules: qualityReviewRules,
           },
@@ -358,7 +437,23 @@ function App() {
             } else if (data.type === 'step') {
               setCurrentSteps(prev => [...prev, data.data]);
               
-              // Process the step data and create meaningful messages
+              const mapIcon = (name: string) => {
+                const n = String(name || '').toLowerCase();
+                if (n.includes('sequential')) return '🧠';
+                if (n.includes('outlier') || n.includes('anomaly')) return '❓';
+                if (n.includes('edit') || n.includes('replace') || n.includes('text_editor')) return '📝';
+                if (n.includes('report') || n.includes('summary')) return '📣';
+                return '📎';
+              };
+              const sseInfo = {
+                step_number: data.data.step_number,
+                error: data.data.error || null,
+                reflection: data.data.reflection || null,
+                lakeview_summary: data.data.lakeview_summary || null,
+                content: data.data.llm_response?.content || data.data.llm_response?.content_excerpt || null,
+                tool_calls: (data.data.tool_calls || []).map((t: any) => ({ name: t.name, icon: mapIcon(t.name) })),
+                tool_results: (data.data.tool_results || []).map((r: any) => ({ success: !!r.success, result: r.result, error: r.error }))
+              };
               const stepMessage = [];
 
               // Required fields summary
@@ -478,7 +573,7 @@ function App() {
                 stepMessage.push({
                   id: stepId + '_tools',
                   type: 'system' as const,
-                  content: `🔧 执行工具 (${toolCallCount}): ${toolNames}`,
+                  content: `${data.data.tool_calls.map((t: any) => `${mapIcon(t.name)} ${t.name}`).join(' ')}`,
                   timestamp: new Date(stepTimestamp),
                   sessionId: sessionId,
                   stepId: stepId
@@ -494,6 +589,20 @@ function App() {
                     timestamp: new Date(stepTimestamp),
                     sessionId: sessionId,
                     stepId: stepId
+                  });
+                }
+                if (data.data.tool_results && Array.isArray(data.data.tool_results)) {
+                  data.data.tool_results.forEach((r: any, idx: number) => {
+                    const ok = !!r.success; const icon = ok ? '✅' : '❌';
+                    const text = r.result ? String(r.result) : (r.error ? String(r.error) : '');
+                    stepMessage.push({
+                      id: stepId + `_tool_result_${idx}`,
+                      type: ok ? 'system' as const : 'error' as const,
+                      content: `${icon} ${text}`,
+                      timestamp: new Date(stepTimestamp),
+                      sessionId: sessionId,
+                      stepId: stepId
+                    });
                   });
                 }
               }
@@ -536,13 +645,19 @@ function App() {
                 });
               }
               
-              // Add all step messages to session
-              if (stepMessage.length > 0) {
-                const currentMessages = sessions.find(s => s.id === sessionId)?.messages || [];
-                updateSession(sessionId, {
-                  messages: [...currentMessages, ...stepMessage]
-                });
-              }
+              const currentMessages = sessions.find(s => s.id === sessionId)?.messages || [];
+              const sseStoreMsg = {
+                id: stepId + '_sse',
+                type: 'system' as const,
+                content: 'SSE步骤',
+                timestamp: new Date(stepTimestamp),
+                sessionId: sessionId,
+                stepId: stepId,
+                sse_step: sseInfo
+              };
+              updateSession(sessionId, {
+                messages: [...currentMessages, sseStoreMsg, ...stepMessage]
+              });
           } else if (data.type === 'completed') {
             setCurrentSteps(data.data.steps || []);
             
@@ -587,34 +702,9 @@ function App() {
               const msgs2 = (sessions.find(s => s.id === sessionId)?.messages || []).concat([lvMsg]);
               updateSession(sessionId, { messages: msgs2 });
             }
-          }
-          },
-          (error) => {
-            console.error('Streaming error:', error);
-            toast.error('流式处理出错');
             
-            // Add error message to session
-            updateSession(sessionId, {
-              messages: [...(sessions.find(s => s.id === sessionId)?.messages || []), {
-                id: makeMsgId(),
-                type: 'error' as const,
-                content: '流式处理出错: ' + error.message,
-                timestamp: new Date(),
-                sessionId: sessionId
-              }]
-            });
-          },
-          () => {
-            setIsStreaming(false);
-            toast.success('任务完成');
           }
-        );
-      } catch (error) {
-      console.error('Failed to run task:', error);
-      toast.error('执行任务失败，请检查后端服务状态');
-      setIsStreaming(false);
-    }
-    }
+          }
       // Unified streaming mode - remove non-streaming path
       try {
         // Use the streaming implementation directly
@@ -893,10 +983,6 @@ function App() {
                 sessionId: sessionId
               }]
             });
-          },
-          () => {
-            setIsStreaming(false);
-            toast.success('任务完成');
           }
         );
       } catch (error) {
@@ -1038,6 +1124,62 @@ function App() {
             </button>
           </div>
         </div>
+
+        {isCommandOpen && (
+          <div className="border-b bg-background h-[80px] flex items-center gap-2 px-3">
+            <div
+              className="flex items-center flex-1 gap-2"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                try {
+                  const raw = e.dataTransfer.getData('text/plain');
+                  const obj = JSON.parse(raw);
+                  if (obj && typeof obj === 'object') {
+                    let display = '';
+                    let token = '';
+                    if (obj.type === 'workspace') {
+                      display = `file:${obj.path}`;
+                      token = `[workspace:${obj.absolute}]`;
+                    } else if (obj.type === 'online') {
+                      display = `online:${obj.documentId}`;
+                      token = `[online:documentId=${obj.documentId} path=/Online/${obj.documentId}.md]`;
+                    }
+                    if (display && token) {
+                      setCommandAttachments((prev) => [...prev, { display, token }]);
+                    }
+                  }
+                } catch { /* noop */ }
+              }}
+            >
+              {commandAttachments.map((att, idx) => (
+                <div key={idx} className="flex items-center gap-1 px-2 py-1 bg-muted rounded">
+                  <FileIcon className="h-4 w-4" />
+                  <span className="text-xs">{att.display}</span>
+                </div>
+              ))}
+              <input
+                autoFocus
+                value={commandText}
+                onChange={(e) => setCommandText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && (commandText.trim() || commandAttachments.length)) {
+                    const tokens = commandAttachments.map((a) => a.token).join(' ');
+                    const msg = tokens ? `${commandText.trim()} ${tokens}`.trim() : commandText.trim();
+                    handleSendMessage(msg, true);
+                    setCommandText('');
+                    setCommandAttachments([]);
+                    setIsCommandOpen(false);
+                  } else if (e.key === 'Escape') {
+                    setIsCommandOpen(false);
+                  }
+                }}
+                placeholder="输入命令或拖拽文件到此 (Cmd+Shift+K 打开)"
+                className="flex-1 px-3 py-2 border rounded text-sm bg-background"
+              />
+            </div>
+          </div>
+        )}
         
         <div className="flex-1 flex overflow-hidden">
           <div className="w-64 border-r bg-muted/30 flex flex-col overflow-hidden">
@@ -1148,28 +1290,7 @@ function App() {
           </div>
         )}
 
-        {isCommandOpen && (
-          <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={() => setIsCommandOpen(false)}>
-            <div className="bg-background border rounded-md shadow-xl w-[600px] max-w-[90vw] p-4" onClick={(e) => e.stopPropagation()}>
-              <input
-                autoFocus
-                value={commandText}
-                onChange={(e) => setCommandText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && commandText.trim()) {
-                    handleSendMessage(commandText.trim(), true);
-                    setCommandText('');
-                    setIsCommandOpen(false);
-                  } else if (e.key === 'Escape') {
-                    setIsCommandOpen(false);
-                  }
-                }}
-                placeholder="输入命令后按回车提交 (Cmd+Shift+K 打开) - create session 来创建新会话"
-                className="w-full px-3 py-2 border rounded text-sm bg-background"
-              />
-            </div>
-          </div>
-        )}
+        
 
         {isConsoleOpen && (
           <div className="fixed inset-0 z-[60] pointer-events-none">
@@ -1190,8 +1311,9 @@ function App() {
               open={isSystemSettingsOpen}
               onOpenChange={setIsSystemSettingsOpen}
               systemPrompts={systemPrompts}
-              currentPrompt={systemPrompt || ''}
+              selectedPromptName={selectedPromptName}
               onPromptChange={setSystemPrompt}
+              onSelectPrompt={setSelectedPromptName}
               onSavePrompt={handleSaveSystemPrompt}
               onDeletePrompt={handleDeleteSystemPrompt}
               modelConfig={{
@@ -1207,7 +1329,9 @@ function App() {
               onQualityReviewRulesChange={setQualityReviewRules}
               onViewPrompt={async (name: string) => {
                 try {
-                  const full = await apiClient.getStoredPrompt(name);
+                  const found = systemPrompts.find(p => p.name === name);
+                  if (!found) throw new Error('Prompt not found');
+                  const full = await apiClient.getStoredPromptById(Number(found.id));
                   setPromptView({ open: true, name: full.name, content: full.content });
                 } catch {
                   toast.error('获取详情失败');
@@ -1215,9 +1339,11 @@ function App() {
               }}
               onEditPrompt={async (name: string) => {
                 try {
-                  const full = await apiClient.getStoredPrompt(name);
+                  const found = systemPrompts.find(p => p.name === name);
+                  if (!found) throw new Error('Prompt not found');
+                  const full = await apiClient.getStoredPromptById(Number(found.id));
                   let payload: any = {};
-                  try { payload = JSON.parse(full.content); } catch {}
+                  try { payload = JSON.parse(full.content); } catch { void 0; }
                   setPromptEdit({ open: true, name: full.name, content: (payload.text ?? full.content), enable_quality_review: !!payload.enable_quality_review, quality_review_rules: (payload.quality_review_rules ?? '') });
                 } catch {
                   toast.error('获取详情失败');
@@ -1295,7 +1421,7 @@ function App() {
                       const list = await apiClient.listStoredPrompts();
                       const items = await Promise.all(list.map(async (p) => {
                         try {
-                          const full = await apiClient.getStoredPrompt(p.name);
+                          const full = await apiClient.getStoredPromptById(p.id);
                           return { id: String(full.id), name: full.name, content: full.content };
                         } catch {
                           return { id: String(p.id), name: p.name, content: '' };

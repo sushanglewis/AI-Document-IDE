@@ -467,9 +467,9 @@ class ApiClient {
     return (res.data?.prompts || []) as Array<{ id: number; name: string }>;
   }
 
-  async getStoredPrompt(name: string): Promise<{ id: number; name: string; content: string }> {
-    const res = await this.client.post('/storage/prompt/get', { name });
-    return res.data as { id: number; name: string; content: string };
+  async getStoredPromptById(id: number): Promise<{ id: number; name: string; content: string; enable_review?: boolean; review_rules?: string }> {
+    const res = await this.client.post('/storage/prompt/get', { id });
+    return res.data as { id: number; name: string; content: string; enable_review?: boolean; review_rules?: string };
   }
 
   async writeStoredPrompt(name: string, content: string): Promise<{ id: number; name: string }> {
@@ -495,6 +495,38 @@ class ApiClient {
   async getAvailableTools(): Promise<{ tools: Array<{ name: string; description: string }> }> {
     const response = await this.client.get('/agent/tools');
     return response.data;
+  }
+
+  async closeInteractiveSession(sessionId: string): Promise<{ session_id: string; closed: boolean }> {
+    const response = await this.client.post('/agent/interactive/close', undefined, {
+      params: { session_id: sessionId }
+    });
+    return response.data;
+  }
+
+  async searchOnlineDocs(): Promise<any> {
+    const payload = {
+      userId: 'user',
+      keyword: '',
+      documentId: '',
+      filterType: 'all',
+      startTime: '',
+      endTime: '',
+      orderBy: 'createtime',
+      order: 'asc',
+      pageNum: 1,
+      pageSize: 100,
+    };
+    const res = await this.client.post('/online/docs/search', payload);
+    return res.data;
+  }
+
+  async getOnlineDocDetail(params: { userId: string; documentId: string }): Promise<any> {
+    const res = await this.client.post('/online/docs/detail', {
+      userId: params.userId,
+      documentId: params.documentId,
+    });
+    return res.data;
   }
 }
 

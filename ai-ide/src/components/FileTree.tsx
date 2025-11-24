@@ -1,10 +1,10 @@
 import React from 'react';
-import { ChevronRight, ChevronDown, File, Folder, FolderOpen, RefreshCw, Plus, Home } from 'lucide-react';
+import { ChevronRight, ChevronDown, File, Folder, FolderOpen, RefreshCw, Home } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { getFileLanguage } from '../lib/utils';
 import { FileNode } from '../lib/store';
 import { apiClient } from '../lib/api';
 import { useAppStore } from '../lib/store';
-import { toast } from 'sonner';
 
 interface FileTreeProps {
   className?: string;
@@ -12,9 +12,9 @@ interface FileTreeProps {
 }
 
 export const FileTree: React.FC<FileTreeProps> = ({ className, onFileSelect }) => {
-  const { fileTree, workspaceRoot, updateFileNode, setFileTree, currentSessionId } = useAppStore();
+  const { fileTree, workspaceRoot, updateFileNode, setFileTree, addOpenFile, setActiveFile } = useAppStore();
   const [isRefreshing, setIsRefreshing] = React.useState(false);
-  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  const [onlineDocs, setOnlineDocs] = React.useState<Array<{ documentId: string; title?: string; name?: string }>>([]);
 
   const toRelative = (p: string) => {
     if (!p) return '';
@@ -89,22 +89,49 @@ export const FileTree: React.FC<FileTreeProps> = ({ className, onFileSelect }) =
     refreshTree();
   }, [workspaceRoot]);
 
+  React.useEffect(() => {
+    searchOnline();
+  }, []);
+
   const goToRoot = async () => {
     await refreshTree();
   };
 
-  const handleUpload = async (file: File) => {
-    if (!currentSessionId) {
-      toast.error('请先创建会话再上传文件');
-      return;
-    }
+
+  const searchOnline = async () => {
     try {
-      await apiClient.uploadFile(currentSessionId, file);
-      toast.success('文件已上传');
-      await refreshTree();
+      const res = await apiClient.searchOnlineDocs();
+      const list = Array.isArray(res?.items)
+        ? res.items
+        : Array.isArray(res?.list)
+          ? res.list
+          : Array.isArray(res?.data?.items)
+            ? res.data.items
+            : Array.isArray(res?.data?.list)
+              ? res.data.list
+              : [];
+      const mapped = list.map((it: any) => ({ documentId: String(it.documentId || it.id || it.docId || ''), title: it.title, name: it.name }));
+      setOnlineDocs(mapped);
     } catch (e) {
-      toast.error('上传失败');
+      setOnlineDocs([]);
+    } finally {
+      // noop
     }
+  };
+
+  const openOnlineDoc = async (docId: string) => {
+    try {
+      const res = await apiClient.getOnlineDocDetail({ userId: 'user', documentId: docId });
+      const content = typeof res?.content === 'string'
+        ? res.content
+        : typeof res?.data?.content === 'string'
+          ? res.data.content
+          : JSON.stringify(res);
+      const path = `/Online/${docId}.md`;
+      const editorFile = { path, content, isDirty: false, language: getFileLanguage(path) };
+      addOpenFile(editorFile);
+      setActiveFile(path);
+    } catch { void 0; }
   };
 
   const renderNode = (node: FileNode, depth: number = 0) => {
@@ -124,6 +151,14 @@ export const FileTree: React.FC<FileTreeProps> = ({ className, onFileSelect }) =
               toggleDirectory(node);
             } else {
               onFileSelect(node.path);
+            }
+          }}
+          draggable={node.type === 'file'}
+          onDragStart={(e) => {
+            if (node.type === 'file') {
+              const abs = node.path.startsWith('/') ? node.path : `${workspaceRoot}/${node.path}`;
+              const payload = { type: 'workspace', path: node.path, absolute: abs };
+              e.dataTransfer.setData('text/plain', JSON.stringify(payload));
             }
           }}
         >
@@ -167,51 +202,70 @@ export const FileTree: React.FC<FileTreeProps> = ({ className, onFileSelect }) =
     <div className={cn("flex flex-col h-full", className)}>
       <div className="flex items-center justify-between p-2 border-b">
         <h3 className="text-sm font-semibold">Files</h3>
-        <div className="flex flex-row gap-1 items-center">
-          <button
-            onClick={refreshTree}
-            disabled={isRefreshing}
-            className="p-1 hover:bg-accent rounded-sm"
-            title="Refresh"
-          >
-            <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
-          </button>
-          <button
-            onClick={goToRoot}
-            disabled={isRefreshing}
-            className="p-1 hover:bg-accent rounded-sm"
-            title="返回根目录"
-          >
-            <Home className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="p-1 hover:bg-accent rounded-sm"
-            title="New File"
-          >
-            <Plus className="h-4 w-4" />
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) handleUpload(f);
-            }}
-          />
-          {/* 移除 workspaceRoot 显示 */}
-        </div>
       </div>
-      
-      <div className="flex-1 overflow-y-auto p-2">
-        {fileTree.length === 0 ? (
-          <div className="text-sm text-muted-foreground text-center py-8">
-            No files in workspace
+      <div className="flex-1 overflow-y-auto p-2 space-y-4">
+        <div className="border rounded-md">
+          <div className="flex items-center justify-between px-2 py-1 border-b">
+            <div className="text-xs font-medium">/workspace</div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={refreshTree}
+                disabled={isRefreshing}
+                className="p-1 hover:bg-accent rounded-sm"
+                title="Refresh"
+              >
+                <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
+              </button>
+              <button
+                onClick={goToRoot}
+                disabled={isRefreshing}
+                className="p-1 hover:bg-accent rounded-sm"
+                title="返回根目录"
+              >
+                <Home className="h-4 w-4" />
+              </button>
+            </div>
           </div>
-        ) : (
-          fileTree.map(node => renderNode(node))
-        )}
+          <div className="p-2">
+            {fileTree.length === 0 ? (
+              <div className="text-sm text-muted-foreground text-center py-8">No files in workspace</div>
+            ) : (
+              fileTree.map(node => renderNode(node))
+            )}
+          </div>
+        </div>
+        <div className="border rounded-md">
+          <div className="px-2 py-1 border-b cursor-pointer" onClick={searchOnline}>
+            <div className="text-xs font-medium">/Online</div>
+          </div>
+          <div className="p-2">
+            {onlineDocs.length === 0 ? (
+              <div className="text-xs text-muted-foreground">无在线文档</div>
+            ) : (
+              onlineDocs.map((d) => (
+                <div
+                  key={d.documentId}
+                  className="flex items-center gap-2 py-1 px-2 hover:bg-accent cursor-pointer rounded-sm"
+                  onClick={() => openOnlineDoc(d.documentId)}
+                  draggable
+                  onDragStart={(e) => {
+                    const payload = {
+                      type: 'online',
+                      documentId: d.documentId,
+                      title: d.title,
+                      name: d.name,
+                      path: `/Online/${d.documentId}.md`,
+                    };
+                    e.dataTransfer.setData('text/plain', JSON.stringify(payload));
+                  }}
+                >
+                  <File className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm truncate flex-1">{d.title || d.name || d.documentId}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

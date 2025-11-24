@@ -25,10 +25,11 @@ interface SystemSettingsProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   systemPrompts: SystemPrompt[];
-  currentPrompt: string;
+  selectedPromptName?: string;
   onPromptChange: (prompt: any) => void;
+  onSelectPrompt?: (name: string) => void;
   onSavePrompt: (prompt: SystemPrompt) => void;
-  onDeletePrompt: (id: string) => void;
+  onDeletePrompt: (name: string) => void;
   modelConfig: ModelConfig;
   onModelConfigChange: (config: ModelConfig) => void;
   qualityReviewEnabled?: boolean;
@@ -43,9 +44,11 @@ export function SystemSettings({
   open,
   onOpenChange,
   systemPrompts,
-  currentPrompt,
+  selectedPromptName,
   onPromptChange,
+  onSelectPrompt,
   onSavePrompt,
+  onDeletePrompt,
   modelConfig,
   onModelConfigChange,
   qualityReviewEnabled = false,
@@ -180,7 +183,7 @@ export function SystemSettings({
                     {systemPrompts.map((prompt) => (
                       <div
                         key={prompt.id}
-                        className={"border rounded-lg p-3 flex items-center justify-between cursor-pointer " + (prompt.content === currentPrompt ? 'bg-accent' : '')}
+                        className={"border rounded-lg p-3 flex items-center justify-between cursor-pointer " + (prompt.name === selectedPromptName ? 'bg-accent' : '')}
                         onClick={() => {
                           let contentText = prompt.content;
                           try {
@@ -188,17 +191,16 @@ export function SystemSettings({
                             if (typeof obj.text === 'string') contentText = obj.text;
                             if (typeof obj.enable_quality_review === 'boolean') onQualityReviewEnabledChange?.(obj.enable_quality_review);
                             if (typeof obj.quality_review_rules === 'string') onQualityReviewRulesChange?.(obj.quality_review_rules);
-                          } catch {}
+                          } catch { void 0; }
                           onPromptChange(contentText);
+                          onSelectPrompt?.(prompt.name);
                         }}
                       >
                         <span className="text-sm font-medium">{prompt.name}</span>
                         <div className="flex items-center gap-2">
                           <Button size="sm" variant="outline" onClick={() => onViewPrompt?.(prompt.name)}>查看详情</Button>
                           <Button size="sm" onClick={() => onEditPrompt?.(prompt.name)}>修改</Button>
-                          <Button size="sm" variant="ghost" onClick={async () => {
-                            await fetch('/storage/prompt/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: prompt.name }) });
-                          }}>删除</Button>
+                          <Button size="sm" variant="ghost" onClick={() => onDeletePrompt?.(prompt.name)}>删除</Button>
                         </div>
                       </div>
                     ))}

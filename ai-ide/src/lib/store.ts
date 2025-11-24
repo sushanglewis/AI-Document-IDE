@@ -9,6 +9,8 @@ export interface Message {
   sessionId?: string;
   stepId?: string;
   metadata?: any;
+  attachments?: string[];
+  sse_step?: any;
 }
 
 export interface Session {
