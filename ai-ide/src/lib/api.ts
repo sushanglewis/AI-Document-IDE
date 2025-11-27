@@ -66,6 +66,7 @@ export interface InteractiveStartRequest {
   agent_mode_config?: { mode_name?: string; system_prompt?: string };
   enable_quality_review?: boolean;
   quality_review_rules?: string;
+  use_online_mode?: boolean;
 }
 
 export interface InteractiveTaskRequest {
@@ -131,6 +132,15 @@ export interface AgentStep {
   }>;
   reflection?: string;
   timestamp: string;
+  message_units?: Array<{
+    type: 'think' | 'tool_call' | 'tool_result' | 'agent_output';
+    call_id?: string;
+    name?: string;
+    arguments?: any;
+    success?: boolean;
+    markdown?: string;
+    content?: string;
+  }>;
 }
 
 export interface TrajectoryData {
@@ -263,70 +273,41 @@ class ApiClient {
     onError?: (error: Error) => void,
     onComplete?: () => void
   ): Promise<void> {
-    try {
-      const response = await fetch(`${API_BASE_URL}/agent/interactive/task/stream`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(request),
-      });
+    return new Promise<void>((resolve) => {
+      const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const wsUrl = `${protocol}://${window.location.host}/ws/agent/interactive/task`;
+      const ws = new WebSocket(wsUrl);
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('Response body is not available');
-      }
-
-      const decoder = new TextDecoder();
-      let currentEvent: string | null = null;
-      
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const chunk = decoder.decode(value);
-          const lines = chunk.split('\n');
-          
-          for (const line of lines) {
-            if (line.startsWith('event: ')) {
-              currentEvent = line.slice(7).trim();
-              continue;
-            }
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6);
-              if (data.trim()) {
-                // Handle non-JSON terminal markers like 'done'
-                if (data.trim() === 'done') {
-                  onComplete?.();
-                  currentEvent = null;
-                  continue;
-                }
-                try {
-                  const parsed = JSON.parse(data);
-                  // Pass through event name to consumer
-                  onMessage({ type: currentEvent || 'message', data: parsed });
-                } catch (e) {
-                  // Ignore non-JSON payloads silently
-                }
-              }
-            }
-          }
+      ws.onopen = () => {
+        try {
+          ws.send(JSON.stringify(request));
+        } catch (e) {
+          onError?.(e as Error);
         }
-        onComplete?.();
-      } catch (error) {
-        onError?.(error as Error);
-      } finally {
-        reader.releaseLock();
-      }
-    } catch (error) {
-      console.error('Stream request failed:', error);
-      onError?.(error as Error);
-    }
+      };
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          onMessage(msg);
+          if (msg && msg.type === 'end') {
+            onComplete?.();
+            ws.close();
+            resolve();
+          }
+        } catch (e) {
+          // ignore non-JSON frames
+        }
+      };
+
+      ws.onerror = () => {
+        onError?.(new Error('WebSocket error'));
+      };
+
+      ws.onclose = () => {
+        resolve();
+      };
+    });
   }
 
   async runAgent(request: RunRequest): Promise<TrajectoryData> {
@@ -360,63 +341,50 @@ class ApiClient {
     onError?: (error: Error) => void,
     onComplete?: () => void
   ): Promise<void> {
-    const response = await fetch(`${API_BASE_URL}/agent/run/stream`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(request),
-    });
+    return new Promise<void>((resolve) => {
+      const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const wsUrl = `${protocol}://${window.location.host}/ws/agent/run/stream`;
+      const ws = new WebSocket(wsUrl);
 
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const reader = response.body?.getReader();
-    if (!reader) {
-      throw new Error('Response body is not available');
-    }
-
-    const decoder = new TextDecoder();
-    let currentEvent: string | null = null;
-    
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
-        
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            currentEvent = line.slice(7).trim();
-            continue;
-          }
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data.trim()) {
-              if (data.trim() === 'done') {
-                onComplete?.();
-                currentEvent = null;
-                continue;
-              }
-              try {
-                const parsed = JSON.parse(data);
-                onMessage({ type: currentEvent || 'message', data: parsed });
-              } catch (e) {
-                // Ignore non-JSON payloads silently
-              }
-            }
-          }
+      ws.onopen = () => {
+        try {
+          ws.send(JSON.stringify(request));
+        } catch (e) {
+          onError?.(e as Error);
         }
-      }
-      onComplete?.();
-    } catch (error) {
-      onError?.(error as Error);
-    } finally {
-      reader.releaseLock();
-    }
+      };
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          onMessage(msg);
+          if (msg && msg.type === 'end') {
+            onComplete?.();
+            ws.close();
+            resolve();
+          }
+        } catch (e) {
+          // ignore non-JSON frames
+        }
+      };
+
+      ws.onerror = () => {
+        onError?.(new Error('WebSocket error'));
+      };
+
+      ws.onclose = () => {
+        resolve();
+      };
+    });
+  }
+
+  async runInteractiveTaskWS(
+    request: InteractiveTaskRequest,
+    onMessage: (data: any) => void,
+    onError?: (error: Error) => void,
+    onComplete?: () => void
+  ): Promise<void> {
+    return this.runInteractiveTaskStream(request, onMessage, onError, onComplete);
   }
 
   async runAgentCLI(request: { workspace: string; command: string }): Promise<{ output: string }> {
@@ -482,15 +450,6 @@ class ApiClient {
     return res.data as { deleted: boolean };
   }
 
-  async uploadFile(sessionId: string, file: File, relativePath?: string): Promise<{ path: string; container_path: string; filename: string; size?: number }>{
-    const form = new FormData();
-    form.append('file', file);
-    const response = await this.client.post('/files/upload', form, {
-      params: { session_id: sessionId, relative_path: relativePath },
-      headers: { 'Content-Type': 'multipart/form-data' }
-    });
-    return response.data;
-  }
 
   async getAvailableTools(): Promise<{ tools: Array<{ name: string; description: string }> }> {
     const response = await this.client.get('/agent/tools');
@@ -506,18 +465,15 @@ class ApiClient {
 
   async searchOnlineDocs(): Promise<any> {
     const payload = {
-      userId: 'user',
-      keyword: '',
-      documentId: '',
-      filterType: 'all',
-      startTime: '',
-      endTime: '',
-      orderBy: 'createtime',
-      order: 'asc',
       pageNum: 1,
       pageSize: 100,
+      orderBy: 'updateTime',
+      order: 'desc',
+      userId: 'user',
     };
-    const res = await this.client.post('/online/docs/search', payload);
+    const res = await axios.post('http://localhost:8090/online/docs/search', payload, {
+      headers: { 'Content-Type': 'application/json' },
+    });
     return res.data;
   }
 
@@ -527,6 +483,40 @@ class ApiClient {
       documentId: params.documentId,
     });
     return res.data;
+  }
+
+  async createOnlineReport(params: { title: string; description?: string; userId?: string; content?: string }): Promise<any> {
+    const payload = {
+      title: params.title,
+      description: params.description || '',
+      userId: params.userId || 'user',
+      content: params.content || '',
+    };
+    const res = await this.client.post('/online/docs/create', payload);
+    return res.data;
+  }
+
+  async getOnlineBaseUrl(): Promise<{ base_url: string }>{
+    const res = await this.client.get('/online/base-url');
+    return res.data as { base_url: string };
+  }
+
+  async setOnlineBaseUrl(base_url: string): Promise<{ base_url: string }>{
+    const res = await this.client.post('/online/base-url', { base_url });
+    return res.data as { base_url: string };
+  }
+
+
+  // Removed: ws/trajectory/stream client
+
+  async uploadFile(sessionId: string | null, file: File, relativePath?: string, workspace?: string): Promise<any> {
+    const form = new FormData();
+    form.append('file', file);
+    const response = await axios.post(`${API_BASE_URL}/files/upload`, form, {
+      params: { session_id: sessionId || undefined, relative_path: relativePath, workspace },
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
   }
 }
 

@@ -51,7 +51,8 @@ export const StreamingConsole: React.FC<StreamingConsoleProps> = ({
       type: msg.type,
       content: msg.content,
       timestamp: new Date(msg.timestamp as any),
-      isStep: false
+      isStep: false,
+      metadata: { attachments: (msg as any).attachments, sse_step: (msg as any).sse_step }
     }));
     
     const stepItems: ConsoleStepItem[] = steps.map(step => {
@@ -75,9 +76,11 @@ export const StreamingConsole: React.FC<StreamingConsoleProps> = ({
       if (item.isStep) {
         const s = (item as any).step as AgentStep;
         const c = (s.llm_response?.content || s.llm_response?.content_excerpt || '').trim();
-        return c.length > 0;
+        const mus = Array.isArray((s as any).message_units) ? (s as any).message_units : [];
+        return c.length > 0 || mus.length > 0;
       }
-      return (item.content || '').trim().length > 0;
+      const hasSse = !!(item as any).metadata?.sse_step;
+      return hasSse || ((item.content || '').trim().length > 0);
     });
   }, [allItems]);
 
@@ -88,30 +91,69 @@ export const StreamingConsole: React.FC<StreamingConsoleProps> = ({
       {displayItems.length > 0 ? (
         <>
           {displayItems.map((item) => {
-            const tools = item.isStep && 'step' in item && item.step.tool_calls && item.step.tool_calls.length > 0
-              ? `\n🔧 ${item.step.tool_calls.map((t: any) => t.name).join(', ')}`
+            const isSseMsg = !!(item as any).metadata?.sse_step;
+            if (isSseMsg) {
+              const sse = (item as any).metadata?.sse_step;
+              const toolCalls = Array.isArray(sse.tool_calls) ? sse.tool_calls : [];
+              const toolResults = Array.isArray(sse.tool_results) ? sse.tool_results : [];
+              return (
+                <div key={item.id} className="w-full mb-3">
+                  <div className={cn("inline-block max-w-[90%] rounded-2xl px-3 py-2 text-[13px] border bg-muted/40")}> 
+                    <div className="text-xs text-muted-foreground">步骤 {sse.step_number ?? '-'} {sse.error ? '· 发生错误' : ''}</div>
+                    {sse.content && <div className="mt-1 whitespace-pre-wrap">{sse.content}</div>}
+                    {sse.reflection && <div className="mt-2 text-xs">反思：{sse.reflection}</div>}
+                    {sse.lakeview_summary && <div className="mt-2 text-xs">Lakeview：{sse.lakeview_summary}</div>}
+                    {toolCalls.length > 0 && (
+                      <div className="mt-2 text-xs flex flex-wrap gap-1">
+                        {toolCalls.map((t: any, idx: number) => (
+                          <span key={idx} className="px-1.5 py-0.5 bg-muted rounded border">{t.icon} {t.name}</span>
+                        ))}
+                      </div>
+                    )}
+                    {toolResults.length > 0 && (
+                      <div className="mt-2 text-xs space-y-1">
+                        {toolResults.map((r: any, idx: number) => (
+                          <div key={idx}>{r.success ? '✅' : '❌'} {r.result || r.error || ''}</div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            }
+            const step: AgentStep | undefined = item.isStep ? ((item as any).step as AgentStep) : undefined;
+            const tools = item.isStep && step && step.tool_calls && step.tool_calls.length > 0
+              ? `\n🔧 ${step.tool_calls.map((t: any) => t.name).join(', ')}`
               : '';
-            const merged = `${item.content}${tools}`.trim();
+            const mus: Array<any> = item.isStep && step && Array.isArray((step as any).message_units)
+              ? ((step as any).message_units as any[])
+              : [];
+            const musText = mus.length > 0 ? mus.map((u) => {
+              if (u.type === 'think') return `🤔 ${String(u.content || '').trim()}`;
+              if (u.type === 'tool_call') return `🔧 ${String(u.name || '')}`;
+              if (u.type === 'tool_result') return `${u.success ? '✅' : '❌'}`;
+              if (u.type === 'agent_output') return String(u.markdown || '').trim();
+              return '';
+            }).filter(Boolean).join('\n') : '';
+            const merged = `${item.content}${tools}${musText ? ('\n' + musText) : ''}`.trim();
+            const attachments = (item as any).metadata?.attachments as string[] | undefined;
             return (
-              <div key={item.id} className={cn(
-                "w-full mb-3"
-              )}>
+              <div key={(item as any).bubbleId || item.id} className={cn("w/full mb-3")}> 
                 <div className={cn(
                   "inline-block max-w-[80%] rounded-2xl px-3 py-2 text-[14px] border",
-                  item.type === 'user' 
-                    ? "bg-primary/10 border-border" 
-                    : item.type === 'error'
-                    ? "bg-destructive/10 text-destructive border-destructive/20"
-                    : item.type === 'system'
-                    ? "bg-muted/50 text-muted-foreground border-border"
-                    : "bg-muted border-border"
+                  item.type === 'user' ? "bg-primary/10 border-border" :
+                  item.type === 'error' ? "bg-destructive/10 text-destructive border-destructive/20" :
+                  item.type === 'system' ? "bg-muted/50 text-muted-foreground border-border" : "bg-muted border-border"
                 )}>
                   {item.type === 'agent' ? (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} className="prose prose-sm max-w-none dark:prose-invert">
-                      {merged}
-                    </ReactMarkdown>
-                  ) : (
-                    merged
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} className="prose prose-sm max-w-none dark:prose-invert">{merged}</ReactMarkdown>
+                  ) : merged}
+                  {attachments && attachments.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {attachments.map((a, idx) => (
+                        <span key={idx} className="px-1.5 py-0.5 text-xs bg-muted rounded border">{a}</span>
+                      ))}
+                    </div>
                   )}
                 </div>
               </div>

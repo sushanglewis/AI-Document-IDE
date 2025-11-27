@@ -1,0 +1,647 @@
+openapi: 3.0.0
+info:
+  title: Trae Agent API
+  version: 0.1.0
+  description: Trae Agent 后端服务的 OpenAPI 规范，适配 Apifox 导入与调试。
+servers:
+  - url: http://localhost:8090
+    description: 本地开发服务
+
+paths:
+  /health:
+    get:
+      tags: [系统]
+      summary: 健康检查
+      responses:
+        '200':
+          description: 正常
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /workspace:
+    get:
+      tags: [系统]
+      summary: 获取容器工作目录
+      responses:
+        '200':
+          description: 正常
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workspace:
+                    type: string
+        example: /workspace
+
+  /workspaces:
+    get:
+      tags: [系统]
+      summary: 列出可用工作空间
+      responses:
+        '200':
+          description: 工作空间列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+              examples:
+                default:
+                  value: ["/workspace"]
+
+  /agent/tools:
+    get:
+      tags: [Agent]
+      summary: 列出可用工具
+      responses:
+        '200':
+          description: 工具列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tools:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Tool'
+
+  /agent/config:
+    get:
+      tags: [Agent]
+      summary: 查看当前配置
+      parameters:
+        - name: config_file
+          in: query
+          required: false
+          schema:
+            type: string
+            description: 当未提供或文件不存在时，后端使用极简默认配置
+        - name: provider
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: model
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: model_base_url
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: api_key
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 配置详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigResponse'
+
+  /agent/test-model:
+    get:
+      tags: [Agent]
+      summary: 测试模型连通性（OpenAI/OpenRouter）
+      parameters:
+        - name: provider
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [openai, openrouter]
+        - name: model_base_url
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: api_key
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 连通性正常
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        '400':
+          description: 连通性失败或参数错误
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+
+  /agent/prompt:
+    get:
+      tags: [Agent]
+      summary: 获取系统提示词内容
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [DOCUMENT_AGENT_SYSTEM_PROMPT, TRAE_AGENT_SYSTEM_PROMPT]
+      responses:
+        '200':
+          description: 提示词内容
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  prompt:
+                    type: string
+
+  /api/files:
+    get:
+      tags: [文件]
+      summary: 列出目录文件
+      parameters:
+        - name: workspace
+          in: query
+          required: true
+          schema:
+            type: string
+            example: /workspace
+        - name: relative_dir
+          in: query
+          required: false
+          schema:
+            type: string
+            example: trajectories
+        - name: session_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 目录项列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  directory:
+                    type: string
+                  container_directory:
+                    type: string
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        is_dir:
+                          type: boolean
+                        host_path:
+                          type: string
+                        container_path:
+                          type: string
+                  count:
+                    type: integer
+
+  /workspaces/files:
+    get:
+      tags: [文件]
+      summary: 列出工作空间下的文件（返回相对路径）
+      parameters:
+        - name: workspace
+          in: query
+          required: true
+          schema:
+            type: string
+            example: /workspace
+        - name: relative_dir
+          in: query
+          required: false
+          schema:
+            type: string
+            example: trajectories
+      responses:
+        '200':
+          description: 文件列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  files:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        relative_path:
+                          type: string
+                        is_dir:
+                          type: boolean
+
+  /api/file:
+    get:
+      tags: [文件]
+      summary: 读取文件内容
+      parameters:
+        - name: workspace
+          in: query
+          required: true
+          schema:
+            type: string
+            example: /workspace
+        - name: file
+          in: query
+          required: true
+          schema:
+            type: string
+            example: trajectories/trajectory_20250101_120000.json
+      responses:
+        '200':
+          description: 文件内容
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path:
+                    type: string
+                  content:
+                    type: string
+    post:
+      tags: [文件]
+      summary: 写入文件（绝对路径）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FileWriteRequest'
+      responses:
+        '200':
+          description: 写入成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BasicSuccessResponse'
+
+  /files/read:
+    get:
+      tags: [文件]
+      summary: 读取绝对路径文件（支持 /workspace 映射）
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+            example: /workspace/trajectories/trajectory_20250101_120000.json
+        - name: workspace
+          in: query
+          required: false
+          schema:
+            type: string
+            example: /workspace
+        - name: session_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 文件内容
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path:
+                    type: string
+                  content:
+                    type: string
+
+  /files/upload:
+    post:
+      tags: [文件]
+      summary: 上传文件到会话工作目录
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: relative_path
+          in: query
+          required: false
+          schema:
+            type: string
+            example: private/upload.bin
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: 上传成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path:
+                    type: string
+                  container_path:
+                    type: string
+                  filename:
+                    type: string
+                  size:
+                    type: integer
+
+  /agent/interactive/start:
+    post:
+      tags: [Agent]
+      summary: 启动交互式会话
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InteractiveStartRequest'
+      responses:
+        '200':
+          description: 会话已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                  trajectory_file:
+                    type: string
+                  working_dir:
+                    type: string
+
+  /agent/interactive/status:
+    get:
+      tags: [Agent]
+      summary: 查看交互会话状态
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 状态信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  provider:
+                    type: string
+                  model:
+                    type: string
+                  max_steps:
+                    type: integer
+                  tools:
+                    type: array
+                    items:
+                      type: string
+
+  /agent/interactive/task:
+    post:
+      tags: [Agent]
+      summary: 在会话中执行一次任务
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InteractiveTaskRequest'
+      responses:
+        '200':
+          description: 执行结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunResponse'
+
+  /agent/interactive/task/stream:
+    post:
+      tags: [Agent]
+      summary: 以 SSE 流式返回会话任务执行过程
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InteractiveTaskRequest'
+      responses:
+        '200':
+          description: SSE 流
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /agent/run:
+    post:
+      tags: [Agent]
+      summary: 执行一次任务（等价于 CLI run）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunRequest'
+      responses:
+        '200':
+          description: 执行成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunResponse'
+
+  /agent/run/stream:
+    post:
+      tags: [Agent]
+      summary: 以 SSE 流式返回 run 执行过程
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunRequest'
+      responses:
+        '200':
+          description: SSE 流
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+components:
+  schemas:
+    Tool:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+    FileWriteRequest:
+      type: object
+      properties:
+        file:
+          type: string
+          description: 绝对路径
+        content:
+          type: string
+          description: 写入内容
+      required: [file, content]
+    BasicSuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+    RunRequest:
+      type: object
+      properties:
+        task: { type: string }
+        file_path: { type: string }
+        provider: { type: string }
+        model: { type: string }
+        model_base_url: { type: string }
+        api_key: { type: string }
+        max_steps: { type: integer }
+        working_dir: { type: string }
+        must_patch: { type: boolean }
+        config_file: { type: string }
+        trajectory_file: { type: string }
+        patch_path: { type: string }
+        docker_image: { type: string }
+        docker_container_id: { type: string }
+        dockerfile_path: { type: string }
+        docker_image_file: { type: string }
+        docker_keep: { type: boolean }
+        agent_type: { type: string }
+        console_type: { type: string }
+        prompt: { type: string }
+    RunResponse:
+      type: object
+      properties:
+        trajectory_file: { type: string }
+        working_dir: { type: string }
+        success: { type: boolean }
+        final_result: { type: string }
+        agent_state: { type: string }
+        execution_time: { type: number }
+        steps_count: { type: integer }
+    InteractiveStartRequest:
+      type: object
+      properties:
+        provider: { type: string }
+        model: { type: string }
+        model_base_url: { type: string }
+        api_key: { type: string }
+        config_file: { type: string }
+        max_steps: { type: integer }
+        trajectory_file: { type: string }
+        working_dir: { type: string }
+        console_type: { type: string }
+        agent_type: { type: string }
+        docker_image: { type: string }
+        docker_container_id: { type: string }
+        dockerfile_path: { type: string }
+        docker_image_file: { type: string }
+        docker_keep: { type: boolean }
+        prompt:
+          type: string
+          description: 提示词名称或原始文本。当为名称时支持 [DOCUMENT_AGENT_SYSTEM_PROMPT, TRAE_AGENT_SYSTEM_PROMPT]
+        agent_mode_config:
+          $ref: '#/components/schemas/AgentModeConfig'
+    InteractiveTaskRequest:
+      type: object
+      properties:
+        session_id: { type: string }
+        task: { type: string }
+        file_path: { type: string }
+        working_dir: { type: string }
+        must_patch: { type: boolean }
+        patch_path: { type: string }
+        prompt:
+          type: string
+      description: 提示词名称或原始文本。当为名称时支持 [DOCUMENT_AGENT_SYSTEM_PROMPT, TRAE_AGENT_SYSTEM_PROMPT]
+        agent_mode_config:
+          $ref: '#/components/schemas/AgentModeConfig'
+    AgentModeConfig:
+      type: object
+      properties:
+        mode_name:
+          type: string
+        system_prompt:
+          type: string
+      description: 模式配置；当提供 system_prompt 时优先覆盖 prompt 字段
+    ConfigResponse:
+      type: object
+      properties:
+        general:
+          type: object
+          properties:
+            default_provider: { type: string }
+            max_steps: { type: integer }
+        provider:
+          type: object
+          properties:
+            model: { type: string }
+            base_url: { type: string }
+            api_version: { type: string, nullable: true }
+            api_key_set: { type: boolean }
+            max_tokens: { type: integer }
+            temperature: { type: number }
+            top_p: { type: number }
+            top_k: { type: integer }
+        tools:
+          type: array
+          items: { type: string }
+        enable_lakeview: { type: boolean }
+        lakeview:
+          type: object
+          nullable: true
+          properties:
+            model: { type: string }
+            provider: { type: string }
+            base_url: { type: string }

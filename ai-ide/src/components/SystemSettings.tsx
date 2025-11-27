@@ -6,7 +6,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Textarea } from './ui/textarea';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './ui/dialog';
-import { Settings, Plus, Key, BrainCircuit } from 'lucide-react';
+import { Settings, Plus, Key, BrainCircuit, Globe } from 'lucide-react';
+import { apiClient } from '../lib/api';
+import Toast from '../lib/toast';
 
 interface SystemPrompt {
   id: string;
@@ -61,6 +63,17 @@ export function SystemSettings({
   const [activeTab, setActiveTab] = useState('prompts');
   const [newPrompt, setNewPrompt] = useState({ name: '', content: '' });
   const [newPromptDialogOpen, setNewPromptDialogOpen] = useState(false);
+  const [onlineBaseUrl, setOnlineBaseUrl] = useState('http://10.0.2.34:7876');
+  const [loadingBaseUrl, setLoadingBaseUrl] = useState(false);
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiClient.getOnlineBaseUrl();
+        if (res?.base_url) setOnlineBaseUrl(res.base_url);
+      } catch { /* noop */ }
+    })();
+  }, [open]);
 
   const handleSaveNewPrompt = () => {
     if (newPrompt.name.trim() && newPrompt.content.trim()) {
@@ -97,7 +110,7 @@ export function SystemSettings({
         
         <div className="flex-1 overflow-hidden">
           <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="prompts" className="flex items-center gap-2">
               <BrainCircuit className="h-4 w-4" />
               模式配置
@@ -105,6 +118,10 @@ export function SystemSettings({
             <TabsTrigger value="model" className="flex items-center gap-2">
               <Key className="h-4 w-4" />
               模型管理
+            </TabsTrigger>
+            <TabsTrigger value="online" className="flex items-center gap-2">
+              <Globe className="h-4 w-4" />
+              online地址管理
             </TabsTrigger>
           </TabsList>
             
@@ -264,6 +281,41 @@ export function SystemSettings({
                         placeholder="输入自定义基础URL，如 https://api.openai.com/v1"
                       />
                     </div>
+                  </div>
+                </div>
+              </TabsContent>
+
+              {/* Online Address Management Tab */}
+              <TabsContent value="online" className="mt-0 space-y-4">
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold">Online 服务地址</h3>
+                  <div className="space-y-2">
+                    <Label htmlFor="online-base-url">Base URL</Label>
+                    <Input
+                      id="online-base-url"
+                      value={onlineBaseUrl}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => setOnlineBaseUrl(e.target.value)}
+                      placeholder="http://host:port"
+                    />
+                    <div className="text-xs text-muted-foreground">用于 Online 创建/搜索/详情请求的服务端地址</div>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={async () => {
+                        setLoadingBaseUrl(true);
+                        try {
+                          const res = await apiClient.setOnlineBaseUrl(onlineBaseUrl.trim());
+                          setOnlineBaseUrl(res.base_url);
+                          Toast.success('地址已保存');
+                        } catch {
+                          Toast.error('保存失败');
+                        } finally {
+                          setLoadingBaseUrl(false);
+                        }
+                      }}
+                      disabled={!onlineBaseUrl.trim() || loadingBaseUrl}
+                    >保存</Button>
                   </div>
                 </div>
               </TabsContent>

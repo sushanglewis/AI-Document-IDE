@@ -1,0 +1,261 @@
+openapi: 3.0.3
+info:
+  title: Trae Agent API
+  version: 0.1.0
+  description: LLM-based agent CLI wrapped as HTTP API for Apifox
+servers:
+  - url: http://localhost:8080
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /agent/tools:
+    get:
+      summary: List available tools
+      responses:
+        '200':
+          description: Tools list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tools:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Tool'
+  /agent/config:
+    get:
+      summary: Show current configuration
+      parameters:
+        - name: config_file
+          in: query
+          schema:
+            type: string
+            default: trae_config.yaml
+        - name: provider
+          in: query
+          schema:
+            type: string
+        - name: model
+          in: query
+          schema:
+            type: string
+        - name: model_base_url
+          in: query
+          schema:
+            type: string
+        - name: api_key
+          in: query
+          schema:
+            type: string
+        - name: max_steps
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Configuration details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigResponse'
+  /agent/run:
+    post:
+      summary: Run a task with Trae Agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunRequest'
+            examples:
+              simple:
+                summary: Simple run
+                value:
+                  task: Add a new API endpoint to list products
+                  working_dir: /workspace/project
+                  config_file: trae_config.yaml
+                  max_steps: 50
+              docker_image:
+                summary: Run inside a Docker image
+                value:
+                  task: Fix failing unit tests
+                  working_dir: /workspace/project
+                  docker_image: python:3.12-slim
+                  config_file: trae_config.yaml
+              dockerfile:
+                summary: Build from Dockerfile
+                value:
+                  task: Refactor authentication module
+                  working_dir: /workspace/project
+                  dockerfile_path: /workspace/project/Dockerfile
+              file_input:
+                summary: Read task from file
+                value:
+                  file_path: /workspace/tasks/task.md
+                  working_dir: /workspace/project
+      responses:
+        '200':
+          description: Execution result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunResponse'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+        '404':
+          description: File not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+components:
+  schemas:
+    Tool:
+      type: object
+      properties:
+        name:
+          type: string
+          example: bash
+        description:
+          type: string
+          example: Run bash commands in a persistent session
+    ConfigResponse:
+      type: object
+      properties:
+        general:
+          type: object
+          properties:
+            default_provider:
+              type: string
+              example: openrouter
+            max_steps:
+              type: integer
+              example: 200
+        provider:
+          type: object
+          properties:
+            model:
+              type: string
+              example: Qwen3-32B
+            base_url:
+              type: string
+              nullable: true
+            api_version:
+              type: string
+              nullable: true
+            api_key_set:
+              type: boolean
+              example: true
+            max_tokens:
+              type: integer
+              example: 4096
+            temperature:
+              type: number
+              format: float
+              example: 0.5
+            top_p:
+              type: number
+              format: float
+              example: 1
+            top_k:
+              type: integer
+              example: 0
+        tools:
+          type: array
+          items:
+            type: string
+          example:
+            - bash
+            - str_replace_based_edit_tool
+            - sequentialthinking
+            - task_done
+        enable_lakeview:
+          type: boolean
+          example: true
+    RunRequest:
+      type: object
+      properties:
+        task:
+          type: string
+        file_path:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        model_base_url:
+          type: string
+        api_key:
+          type: string
+        max_steps:
+          type: integer
+        working_dir:
+          type: string
+        must_patch:
+          type: boolean
+          default: false
+        config_file:
+          type: string
+          default: trae_config.yaml
+        trajectory_file:
+          type: string
+        patch_path:
+          type: string
+        docker_image:
+          type: string
+        docker_container_id:
+          type: string
+        dockerfile_path:
+          type: string
+        docker_image_file:
+          type: string
+        docker_keep:
+          type: boolean
+          default: true
+        agent_type:
+          type: string
+          default: trae_agent
+    RunResponse:
+      type: object
+      properties:
+        trajectory_file:
+          type: string
+          example: trajectories/trajectory_20250101_120000.json
+        success:
+          type: boolean
+          example: true
+        final_result:
+          type: string
+        agent_state:
+          type: string
+          example: completed
+        execution_time:
+          type: number
+          format: float
+          example: 42.5
+        steps_count:
+          type: integer
+          example: 12

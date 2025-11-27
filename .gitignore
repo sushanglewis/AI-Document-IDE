@@ -1,0 +1,25 @@
+# Dependencies
+node_modules
+.venv
+venv
+__pycache__
+*.pyc
+
+# System
+.DS_Store
+.checkpoints
+
+# IDE
+.idea
+.vscode
+*.swp
+
+# Logs and artifacts
+*.log
+workspace/
+!workspace/README.md
+!workspace/.keep
+
+# Build
+dist/
+build/

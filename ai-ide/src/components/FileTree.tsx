@@ -1,10 +1,15 @@
 import React from 'react';
-import { ChevronRight, ChevronDown, File, Folder, FolderOpen, RefreshCw, Home } from 'lucide-react';
+import { ChevronRight, ChevronDown, File, Folder, FolderOpen, RefreshCw, Home, Plus, Settings, Upload } from 'lucide-react';
+import Toast from '../lib/toast';
 import { cn } from '../lib/utils';
 import { getFileLanguage } from '../lib/utils';
 import { FileNode } from '../lib/store';
 import { apiClient } from '../lib/api';
 import { useAppStore } from '../lib/store';
+import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { Textarea } from './ui/textarea';
+import { Dialog, DialogHeader, DialogTitle, DialogContent } from './ui/dialog';
 
 interface FileTreeProps {
   className?: string;
@@ -12,9 +17,17 @@ interface FileTreeProps {
 }
 
 export const FileTree: React.FC<FileTreeProps> = ({ className, onFileSelect }) => {
-  const { fileTree, workspaceRoot, updateFileNode, setFileTree, addOpenFile, setActiveFile } = useAppStore();
+  const { fileTree, workspaceRoot, updateFileNode, setFileTree, addOpenFile, setActiveFile, currentSessionId } = useAppStore();
+  const uploadRef = React.useRef<HTMLInputElement | null>(null);
   const [isRefreshing, setIsRefreshing] = React.useState(false);
   const [onlineDocs, setOnlineDocs] = React.useState<Array<{ documentId: string; title?: string; name?: string }>>([]);
+  const [isCreateOpen, setIsCreateOpen] = React.useState(false);
+  const [createTitle, setCreateTitle] = React.useState('');
+  const [createDesc, setCreateDesc] = React.useState('');
+  const [isSubmitting, setIsSubmitting] = React.useState(false);
+  const [isPortDialogOpen, setIsPortDialogOpen] = React.useState(false);
+  const [onlineBaseUrl, setOnlineBaseUrl] = React.useState('http://10.0.2.34:7876');
+  const [isSavingBaseUrl, setIsSavingBaseUrl] = React.useState(false);
 
   const toRelative = (p: string) => {
     if (!p) return '';
@@ -93,6 +106,15 @@ export const FileTree: React.FC<FileTreeProps> = ({ className, onFileSelect }) =
     searchOnline();
   }, []);
 
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiClient.getOnlineBaseUrl();
+        if (res?.base_url) setOnlineBaseUrl(res.base_url);
+      } catch { /* noop */ }
+    })();
+  }, []);
+
   const goToRoot = async () => {
     await refreshTree();
   };
@@ -116,6 +138,22 @@ export const FileTree: React.FC<FileTreeProps> = ({ className, onFileSelect }) =
       setOnlineDocs([]);
     } finally {
       // noop
+    }
+  };
+
+  const handleCreateOnline = async () => {
+    if (!createTitle.trim()) return;
+    setIsSubmitting(true);
+    try {
+      await apiClient.createOnlineReport({ title: createTitle.trim(), description: createDesc.trim(), userId: 'user' });
+      setIsCreateOpen(false);
+      setCreateTitle('');
+      setCreateDesc('');
+      await searchOnline();
+    } catch (e) {
+      setIsCreateOpen(false);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -224,6 +262,32 @@ export const FileTree: React.FC<FileTreeProps> = ({ className, onFileSelect }) =
               >
                 <Home className="h-4 w-4" />
               </button>
+              <input
+                ref={uploadRef}
+                type="file"
+                className="hidden"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  try {
+                    const res = await apiClient.uploadFile(currentSessionId || null, file, undefined, workspaceRoot);
+                    const name = typeof res?.filename === 'string' ? res.filename : '';
+                    Toast.success(`已上传: ${name}`);
+                    await refreshTree();
+                  } catch (err) {
+                    Toast.error('上传失败');
+                  } finally {
+                    e.target.value = '';
+                  }
+                }}
+              />
+              <button
+                onClick={() => uploadRef.current?.click()}
+                className="p-1 hover:bg-accent rounded-sm"
+                title="上传私有文档"
+              >
+                <Upload className="h-4 w-4" />
+              </button>
             </div>
           </div>
           <div className="p-2">
@@ -235,8 +299,35 @@ export const FileTree: React.FC<FileTreeProps> = ({ className, onFileSelect }) =
           </div>
         </div>
         <div className="border rounded-md">
-          <div className="px-2 py-1 border-b cursor-pointer" onClick={searchOnline}>
-            <div className="text-xs font-medium">/Online</div>
+          <div className="flex items-center justify-between px-2 py-1 border-b">
+            <div className="px-1 py-0.5 cursor-pointer" onClick={searchOnline}>
+              <div className="text-xs font-medium">/Online</div>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={searchOnline}
+                className="p-1 hover:bg-accent rounded-sm"
+                title="刷新在线文档列表"
+              >
+                <RefreshCw className="h-4 w-4" />
+              </button>
+              {false && (
+                <button
+                  onClick={() => setIsPortDialogOpen(true)}
+                  className="p-1 hover:bg-accent rounded-sm"
+                  title="设置在线服务地址"
+                >
+                  <Settings className="h-4 w-4" />
+                </button>
+              )}
+              <button
+                onClick={() => setIsCreateOpen(true)}
+                className="p-1 hover:bg-accent rounded-sm"
+                title="新建在线文档"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            </div>
           </div>
           <div className="p-2">
             {onlineDocs.length === 0 ? (
@@ -255,6 +346,7 @@ export const FileTree: React.FC<FileTreeProps> = ({ className, onFileSelect }) =
                       title: d.title,
                       name: d.name,
                       path: `/Online/${d.documentId}.md`,
+                      base_url: onlineBaseUrl,
                     };
                     e.dataTransfer.setData('text/plain', JSON.stringify(payload));
                   }}
@@ -265,6 +357,55 @@ export const FileTree: React.FC<FileTreeProps> = ({ className, onFileSelect }) =
               ))
             )}
           </div>
+          <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>新建在线文档</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs text-muted-foreground mb-1">标题 (必填)</label>
+                  <Input value={createTitle} onChange={(e) => setCreateTitle(e.target.value)} placeholder="输入标题" />
+                </div>
+                <div>
+                  <label className="block text-xs text-muted-foreground mb-1">描述</label>
+                  <Textarea value={createDesc} onChange={(e) => setCreateDesc(e.target.value)} placeholder="可选描述" />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 pt-2 border-t">
+                <Button variant="outline" onClick={() => setIsCreateOpen(false)}>取消</Button>
+                <Button onClick={handleCreateOnline} disabled={!createTitle.trim() || isSubmitting}>确定</Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+          {false && (
+            <Dialog open={isPortDialogOpen} onOpenChange={setIsPortDialogOpen}>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Online 服务地址</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs text-muted-foreground mb-1">Base URL</label>
+                    <Input value={onlineBaseUrl} onChange={(e) => setOnlineBaseUrl(e.target.value)} placeholder="http://host:port" />
+                  </div>
+                  <div className="text-xs text-muted-foreground">用于 Online 创建/搜索/详情请求的服务端地址</div>
+                </div>
+                <div className="flex justify-end gap-2 pt-2 border-t">
+                  <Button variant="outline" onClick={() => setIsPortDialogOpen(false)}>取消</Button>
+                  <Button 
+                    onClick={async () => {
+                      setIsSavingBaseUrl(true);
+                      try { await apiClient.setOnlineBaseUrl(onlineBaseUrl.trim()); Toast.success('地址已保存'); }
+                      catch { Toast.error('保存失败'); }
+                      finally { setIsSavingBaseUrl(false); setIsPortDialogOpen(false); }
+                    }}
+                    disabled={!onlineBaseUrl.trim() || isSavingBaseUrl}
+                  >保存</Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+          )}
         </div>
       </div>
     </div>

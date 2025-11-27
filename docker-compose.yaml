@@ -1,26 +1,42 @@
+version: '3.9'
 services:
-  backend:
+  document-ide:
+    container_name: document-ide
     build:
       context: .
       dockerfile: trae-agent/Dockerfile
-    environment:
-      - POSTGRES_URL=postgresql+psycopg://postgres:postgres@postgres:5432/trae
     ports:
       - "8090:8090"
+    environment:
+      POSTGRES_URL: postgresql+psycopg://postgres:postgres@postgres:5432/trae
+      DEFAULT_PROVIDER: openrouter
+      DEFAULT_MODEL: Qwen3-32B
+      OPENROUTER_BASE_URL: http://10.0.2.22:9997/v1
+      OPENROUTER_API_KEY: aiaiaiai123
     volumes:
       - /Users/stylesu/Documents/Heils/Agent/workspace:/workspace
-      - /Users/stylesu/Documents/Heils/Agent/OpenAPI:/app/openapi
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   postgres:
+    container_name: document-ide-postgres
     image: postgres:16
-    environment:
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=trae
     ports:
       - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: trae
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d trae"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     volumes:
       - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
 
 volumes:
   pgdata:

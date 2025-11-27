@@ -8,6 +8,7 @@ export interface Message {
   timestamp: Date;
   sessionId?: string;
   stepId?: string;
+  bubbleId?: string;
   metadata?: any;
   attachments?: string[];
   sse_step?: any;
@@ -64,6 +65,8 @@ interface AppState {
   setSessions: (sessions: Session[]) => void;
   addSession: (session: Session) => void;
   updateSession: (sessionId: string, updates: Partial<Session>) => void;
+  appendSessionMessage: (sessionId: string, message: Message) => void;
+  upsertSessionBubble: (sessionId: string, bubbleId: string, updates: Partial<Message>) => void;
   setCurrentSession: (sessionId: string) => void;
   setSystemPrompt: (prompt: 'TRAE_AGENT_SYSTEM_PROMPT' | 'DOCUMENT_AGENT_SYSTEM_PROMPT') => void;
   
@@ -111,6 +114,39 @@ export const useAppStore = create<AppState>()(
               ? { ...session, ...updates, updatedAt: new Date() }
               : session
           )
+        })),
+
+        appendSessionMessage: (sessionId, message) => set((state) => ({
+          sessions: state.sessions.map(session =>
+            session.id === sessionId
+              ? { ...session, messages: [...session.messages, message], updatedAt: new Date() }
+              : session
+          )
+        })),
+
+        upsertSessionBubble: (sessionId, bubbleId, updates) => set((state) => ({
+          sessions: state.sessions.map(session => {
+            if (session.id !== sessionId) return session;
+            const idx = session.messages.findIndex(m => m.bubbleId === bubbleId);
+            if (idx >= 0) {
+              const prev = session.messages[idx];
+              const next: Message = { ...prev, ...updates, timestamp: new Date() } as Message;
+              const msgs = session.messages.slice();
+              msgs[idx] = next;
+              return { ...session, messages: msgs, updatedAt: new Date() };
+            }
+            const next: Message = {
+              id: updates.id as string || `${Date.now()}_${Math.random().toString(16).slice(2)}`,
+              type: (updates.type as any) || 'agent',
+              content: String(updates.content || ''),
+              timestamp: new Date(),
+              sessionId,
+              bubbleId,
+              metadata: updates.metadata,
+              attachments: updates.attachments as any,
+            };
+            return { ...session, messages: [...session.messages, next], updatedAt: new Date() };
+          })
         })),
         
         setCurrentSession: (sessionId) => set({ currentSessionId: sessionId }),
@@ -179,6 +215,9 @@ export const useAppStore = create<AppState>()(
           systemPrompt: state.systemPrompt,
           workspaceRoot: state.workspaceRoot,
           sidebarCollapsed: state.sidebarCollapsed,
+          fileTree: state.fileTree,
+          openFiles: state.openFiles,
+          activeFilePath: state.activeFilePath,
         }),
       }
     )

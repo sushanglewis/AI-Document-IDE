@@ -1,13 +1,13 @@
 import React from 'react';
 import { Settings, File as FileIcon } from 'lucide-react';
-import { Toaster } from 'sonner';
 import { FileTree } from './components/FileTree';
 import { CodeEditor } from './components/CodeEditor';
-import { StreamingConsole } from './components/StreamingConsole';
 import { SystemSettings } from './components/SystemSettings';
 import { useAppStore, Session } from './lib/store';
-import { apiClient, AgentStep } from './lib/api';
-import { toast } from 'sonner';
+import { apiClient } from './lib/api';
+import RuntimeLogPanel from './components/RuntimeLogPanel';
+ 
+ 
 
 // Add error boundary to handle network issues
 class ErrorBoundary extends React.Component<
@@ -68,8 +68,21 @@ function App() {
   } = useAppStore();
   
   const [isStreaming, setIsStreaming] = React.useState(false);
-  const [currentSteps, setCurrentSteps] = React.useState<AgentStep[]>([]);
+  // Removed: currentSteps state; using system toasts for streaming updates
   const [isBackendAvailable, setIsBackendAvailable] = React.useState(true);
+
+  const appendMessage = (text: string, type: 'system' | 'error' | 'user' | 'agent' = 'system', sid?: string) => {
+    const sessId = sid || currentSessionId;
+    if (!sessId || !text.trim()) return;
+    const msg = {
+      id: ((globalThis.crypto && 'randomUUID' in globalThis.crypto) ? (globalThis.crypto as any).randomUUID() : `${Date.now()}_${Math.random().toString(16).slice(2)}`),
+      type,
+      content: text,
+      timestamp: new Date(),
+      sessionId: sessId,
+    } as any;
+    useAppStore.getState().appendSessionMessage(sessId, msg);
+  };
   const [selectedProvider, setSelectedProvider] = React.useState<string>('openrouter');
   const [modelBaseUrl, setModelBaseUrl] = React.useState<string>('http://10.0.2.22:9997/v1');
   const [modelName, setModelName] = React.useState<string>('Qwen3-32B');
@@ -86,7 +99,6 @@ function App() {
   const [isCommandOpen, setIsCommandOpen] = React.useState(false);
   const [commandText, setCommandText] = React.useState('');
   const [commandAttachments, setCommandAttachments] = React.useState<Array<{display: string; token: string}>>([]);
-  const [isConsoleOpen, setIsConsoleOpen] = React.useState(false);
   const [qualityReviewEnabled, setQualityReviewEnabled] = React.useState<boolean>(false);
   const [qualityReviewRules, setQualityReviewRules] = React.useState<string>("");
   const [promptView, setPromptView] = React.useState<{open: boolean; name: string; content: string} | null>(null);
@@ -147,7 +159,7 @@ function App() {
       } catch (error) {
         console.error('Failed to initialize app:', error);
         setIsBackendAvailable(false);
-        toast.error('初始化应用失败，请确保后端服务正常运行');
+        appendMessage('初始化应用失败，请确保后端服务正常运行', 'error');
         // Fallback to container workspace
         const fallbackWorkspace = '/workspace';
         setWorkspaceRoot(fallbackWorkspace);
@@ -166,27 +178,18 @@ function App() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        setIsCommandOpen(true);
-        if (!currentSessionId) {
+        const wasOpen = isCommandOpen;
+        setIsCommandOpen(!wasOpen);
+        if (!wasOpen && !currentSessionId) {
           setCommandText('-create session');
         }
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [currentSessionId]);
+  }, [currentSessionId, isCommandOpen]);
 
-  React.useEffect(() => {
-    const onToggle = (e: KeyboardEvent) => {
-      const isToggle = (e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'j';
-      if (isToggle) {
-        e.preventDefault();
-        setIsConsoleOpen((v) => !v);
-      }
-    };
-    window.addEventListener('keydown', onToggle);
-    return () => window.removeEventListener('keydown', onToggle);
-  }, []);
+  // Removed: Cmd+Shift+J toggle for message console
 
 
 
@@ -198,9 +201,21 @@ function App() {
         model_base_url: modelBaseUrl,
         api_key: apiKey,
       });
-      toast.success('模型连通性测试通过');
+      appendMessage('模型连通性测试通过');
     } catch (e) {
-      toast.error('模型连通性测试失败');
+      try {
+        const fallbackUrl = 'http://host.docker.internal:9997/v1';
+        await apiClient.testModelConnectivity({
+          provider: selectedProvider,
+          model: modelName,
+          model_base_url: fallbackUrl,
+          api_key: apiKey,
+        });
+        setModelBaseUrl(fallbackUrl);
+        appendMessage('模型连通性测试通过(已切换备用Base URL)');
+      } catch {
+        appendMessage('模型连通性测试失败', 'error');
+      }
     }
   };
 
@@ -212,7 +227,7 @@ function App() {
       return [...others, item];
     });
     setSelectedModelName(name);
-    toast.success('模型配置已保存');
+    appendMessage('模型配置已保存');
   };
 
   // System Settings Functions
@@ -230,9 +245,9 @@ function App() {
       }));
       setSystemPrompts(items);
       setSelectedPromptName(prompt.name);
-      toast.success('系统提示词已保存');
+      appendMessage('系统提示词已保存');
     } catch (e) {
-      toast.error('保存失败');
+      appendMessage('保存失败', 'error');
     }
   };
 
@@ -255,9 +270,9 @@ function App() {
         setQualityReviewEnabled(false);
         setQualityReviewRules('');
       }
-      toast.success('模式配置已删除');
+      appendMessage('模式配置已删除');
     } catch {
-      toast.error('删除失败');
+      appendMessage('删除失败', 'error');
     }
   };
 
@@ -271,7 +286,7 @@ function App() {
     }
   };
 
-  const createNewSession = async (workspacePath?: string) => {
+  const createNewSession = async (workspacePath?: string, onlineMode?: boolean) => {
     try {
       const chosen = savedModels.find((m) => m.name === selectedModelName) || {
         provider: selectedProvider,
@@ -292,6 +307,7 @@ function App() {
         console_type: 'lakeview',
         enable_quality_review: qualityReviewEnabled,
         quality_review_rules: qualityReviewRules,
+        use_online_mode: !!onlineMode,
       });
       
       const newSession: Session = {
@@ -311,20 +327,22 @@ function App() {
       return session.session_id;
     } catch (error) {
       console.error('Failed to create session:', error);
-      toast.error('创建会话失败，请确保后端服务正常运行');
+      appendMessage('创建会话失败，请确保后端服务正常运行', 'error');
       return null;
     }
   };
 
   const handleSendMessage = async (message: string, useStreaming: boolean) => {
-    if (message.trim() === '-create session') {
-      await createNewSession();
-      toast.success('新会话已创建');
+    const trimmed = message.trim();
+    if (trimmed.startsWith('-create session')) {
+      const online = trimmed.includes('-online');
+      const sid = await createNewSession(undefined, online);
+      if (sid) appendMessage(online ? '新会话已创建（在线模式）' : '新会话已创建', 'system', sid);
       return;
     }
     if (message.trim() === '-kill') {
       if (!currentSessionId) {
-        toast.error('无活动会话可关闭');
+        appendMessage('无活动会话可关闭', 'error');
         return;
       }
       try {
@@ -332,10 +350,9 @@ function App() {
         updateSession(currentSessionId, { status: 'completed' });
         setCurrentSession('');
         setIsStreaming(false);
-        setCurrentSteps([]);
-        toast.success('当前会话已关闭');
+        appendMessage('当前会话已关闭');
       } catch (e) {
-        toast.error('关闭会话失败');
+        appendMessage('关闭会话失败', 'error');
       }
       return;
     }
@@ -351,7 +368,6 @@ function App() {
 
     if (useStreaming) {
       setIsStreaming(true);
-      setCurrentSteps([]);
       
       try {
         const extractAttachments = (text: string) => {
@@ -371,17 +387,15 @@ function App() {
         const hashId = (s: string) => { let h = 5381; for (let i = 0; i < s.length; i++) { h = ((h << 5) + h) + s.charCodeAt(i); h &= 0xffffffff; } return Math.abs(h).toString(16); };
         const userId = `user_${hashId('user:user')}`;
         const agentId = `agent_${hashId(selectedModelName || modelName)}`;
-        updateSession(sessionId, {
-          messages: [...(sessions.find(s => s.id === sessionId)?.messages || []), {
-            id: makeMsgId(),
-            type: 'user' as const,
-            content: clean,
-            attachments,
-            timestamp: new Date(),
-            sessionId: sessionId,
-            metadata: { user_id: userId, agent_id: agentId }
-          }]
-        });
+        useAppStore.getState().appendSessionMessage(sessionId, {
+          id: makeMsgId(),
+          type: 'user' as const,
+          content: clean,
+          attachments,
+          timestamp: new Date(),
+          sessionId: sessionId,
+          metadata: { user_id: userId, agent_id: agentId }
+        } as any);
 
         const selectedPromptText = (() => {
           if (!selectedPromptName) return undefined;
@@ -395,7 +409,8 @@ function App() {
           }
         })();
 
-        await apiClient.runInteractiveTaskStream(
+        // Event-driven: use interactive WS bubbles directly; show as system toasts
+        await apiClient.runInteractiveTaskWS(
           {
             session_id: sessionId,
             task: message,
@@ -420,575 +435,36 @@ function App() {
             }
             
             if (data.type === 'start') {
-              console.log('Session started:', data.data);
-              const taskText = (data.data && data.data.task) ? String(data.data.task) : message;
-              updateSession(sessionId!, {
-                messages: [
-                  ...(sessions.find(s => s.id === sessionId)?.messages || []),
-                  {
-                    id: makeMsgId(),
-                    type: 'system' as const,
-                    content: `task: ${taskText}`,
-                    timestamp: new Date(),
-                    sessionId: sessionId!
-                  }
-                ]
-              });
-            } else if (data.type === 'step') {
-              setCurrentSteps(prev => [...prev, data.data]);
-              
-              const mapIcon = (name: string) => {
-                const n = String(name || '').toLowerCase();
-                if (n.includes('sequential')) return '🧠';
-                if (n.includes('outlier') || n.includes('anomaly')) return '❓';
-                if (n.includes('edit') || n.includes('replace') || n.includes('text_editor')) return '📝';
-                if (n.includes('report') || n.includes('summary')) return '📣';
-                return '📎';
-              };
-              const sseInfo = {
-                step_number: data.data.step_number,
-                error: data.data.error || null,
-                reflection: data.data.reflection || null,
-                lakeview_summary: data.data.lakeview_summary || null,
-                content: data.data.llm_response?.content || data.data.llm_response?.content_excerpt || null,
-                tool_calls: (data.data.tool_calls || []).map((t: any) => ({ name: t.name, icon: mapIcon(t.name) })),
-                tool_results: (data.data.tool_results || []).map((r: any) => ({ success: !!r.success, result: r.result, error: r.error }))
-              };
-              const stepMessage = [];
-
-              // Required fields summary
-              const stepNumber = data.data.step_number;
-              const stepTimestamp = data.data.timestamp;
-              const stepId = `step_${stepNumber}_${stepTimestamp}`;
-              const completed = String((data.data.state || '').toUpperCase() === 'COMPLETED');
-              stepMessage.push({
-                id: stepId + '_summary',
-                type: 'system' as const,
-                content: `步骤: ${stepNumber ?? '-'} | 完成: ${completed}`,
-                timestamp: new Date(stepTimestamp),
-                sessionId: sessionId,
-                stepId: stepId,
-              });
-              
-              // Add LLM response content if available
-              if (data.data.llm_response) {
-                // Use full content if available, otherwise use content_excerpt
-                const llmContent = data.data.llm_response.content || data.data.llm_response.content_excerpt || '';
-                const content = llmContent.trim();
-                
-                console.log('LLM response debug:', {
-                  has_full_content: !!data.data.llm_response.content,
-                  has_excerpt: !!data.data.llm_response.content_excerpt,
-                  content_preview: content.substring(0, 100),
-                  content_length: content.length,
-                  finish_reason: data.data.llm_response.finish_reason,
-                  has_tool_calls: !!(data.data.llm_response.tool_calls && data.data.llm_response.tool_calls.length > 0)
-                });
-                
-                if (content.length > 0) {
-                  stepMessage.push({
-                  id: stepId + '_response',
-                  type: 'agent' as const,
-                  content: content,
-                  timestamp: new Date(stepTimestamp),
-                  sessionId: sessionId,
-                  stepId: stepId,
-                  metadata: {
-                    model: data.data.llm_response.model,
-                    usage: data.data.llm_response.usage,
-                    finish_reason: data.data.llm_response.finish_reason,
-                    has_tool_calls: !!(data.data.llm_response.tool_calls && data.data.llm_response.tool_calls.length > 0)
-                  }
-                });
-                  // Also log finish_reason when present
-                  if (data.data.llm_response.finish_reason) {
-                    stepMessage.push({
-                      id: stepId + '_finish_reason',
-                      type: 'system' as const,
-                      content: `finish_reason: ${data.data.llm_response.finish_reason}`,
-                      timestamp: new Date(stepTimestamp),
-                      sessionId: sessionId,
-                      stepId: stepId,
-                    });
-                  }
-                } else if (data.data.llm_response.tool_calls && data.data.llm_response.tool_calls.length > 0) {
-                  // If no text content but has tool calls, show tool execution status
-                  const toolCallNames = data.data.llm_response.tool_calls.map((tool: any) => tool.name).join(', ');
-                  stepMessage.push({
-                    id: stepId + '_tools',
-                    type: 'agent' as const,
-                    content: `🔧 正在执行工具: ${toolCallNames}`,
-                    timestamp: new Date(stepTimestamp),
-                    sessionId: sessionId,
-                    stepId: stepId,
-                    metadata: {
-                      model: data.data.llm_response.model,
-                      usage: data.data.llm_response.usage,
-                      finish_reason: data.data.llm_response.finish_reason,
-                      is_tool_execution: true
-                    }
-                  });
-                  // Explicitly print tool calls array
-                  stepMessage.push({
-                    id: stepId + '_tool_calls_list',
-                    type: 'system' as const,
-                    content: `tool_calls: ${JSON.stringify(data.data.llm_response.tool_calls)}`,
-                    timestamp: new Date(stepTimestamp),
-                    sessionId: sessionId,
-                    stepId: stepId,
-                  });
-                } else {
-                  // Even if content is empty, show model thinking status
-                  stepMessage.push({
-                    id: stepId + '_thinking',
-                    type: 'agent' as const,
-                    content: '🤔 AI正在思考中...',
-                    timestamp: new Date(stepTimestamp),
-                    sessionId: sessionId,
-                    stepId: stepId,
-                    metadata: {
-                      model: data.data.llm_response.model,
-                      usage: data.data.llm_response.usage,
-                      finish_reason: data.data.llm_response.finish_reason,
-                      is_thinking: true
-                    }
-                  });
-                  // Describe empty content reason
-                  stepMessage.push({
-                    id: stepId + '_empty_reason',
-                    type: 'system' as const,
-                    content: `LLM 内容为空。finish_reason=${data.data.llm_response.finish_reason || 'unknown'}，tool_calls=${(data.data.llm_response.tool_calls && data.data.llm_response.tool_calls.length > 0) ? 'present' : 'none'}`,
-                    timestamp: new Date(data.data.timestamp),
-                    sessionId: sessionId,
-                    stepId: stepId,
-                  });
-                }
-              }
-              
-              // Add tool calls information (simplified - backend only provides name and call_id)
-              if (data.data.tool_calls && data.data.tool_calls.length > 0) {
-                const toolNames = data.data.tool_calls.map((tool: any) => tool.name).join(', ');
-                const toolCallCount = data.data.tool_calls.length;
-                
-                stepMessage.push({
-                  id: stepId + '_tools',
-                  type: 'system' as const,
-                  content: `${data.data.tool_calls.map((t: any) => `${mapIcon(t.name)} ${t.name}`).join(' ')}`,
-                  timestamp: new Date(stepTimestamp),
-                  sessionId: sessionId,
-                  stepId: stepId
-                });
-
-                // Add tool results summary if available
-                if (data.data.tool_results_summary) {
-                  const { count = 0, success_count = 0, error_count = 0 } = data.data.tool_results_summary;
-                  stepMessage.push({
-                    id: stepId + '_tool_results',
-                    type: 'system' as const,
-                    content: `📊 工具执行结果: 总计${count}, 成功${success_count}, 失败${error_count}`,
-                    timestamp: new Date(stepTimestamp),
-                    sessionId: sessionId,
-                    stepId: stepId
-                  });
-                }
-                if (data.data.tool_results && Array.isArray(data.data.tool_results)) {
-                  data.data.tool_results.forEach((r: any, idx: number) => {
-                    const ok = !!r.success; const icon = ok ? '✅' : '❌';
-                    const text = r.result ? String(r.result) : (r.error ? String(r.error) : '');
-                    stepMessage.push({
-                      id: stepId + `_tool_result_${idx}`,
-                      type: ok ? 'system' as const : 'error' as const,
-                      content: `${icon} ${text}`,
-                      timestamp: new Date(stepTimestamp),
-                      sessionId: sessionId,
-                      stepId: stepId
-                    });
-                  });
-                }
-              }
-              
-              // Add reflection if available
-              if (data.data.reflection) {
-                stepMessage.push({
-                  id: stepId + '_reflection',
-                  type: 'system' as const,
-                  content: `反思: ${data.data.reflection}`,
-                  timestamp: new Date(stepTimestamp),
-                  sessionId: sessionId,
-                  stepId: stepId
-                });
-              }
-
-              // Lakeview step details per agent消息定义
-              if (data.data.lakeview_step) {
-                const lv = data.data.lakeview_step;
-                const content = `${lv.tags_emoji || ''} ${lv.desc_task || ''} · ${lv.desc_details || ''}`.trim();
-                stepMessage.push({
-                  id: stepId + '_lakeview_step',
-                  type: 'system' as const,
-                  content,
-                  timestamp: new Date(stepTimestamp),
-                  sessionId: sessionId,
-                  stepId: stepId
-                });
-              }
-
-              // Add lakeview summary if available
-              if (data.data.lakeview_summary) {
-                stepMessage.push({
-                  id: stepId + '_lakeview',
-                  type: 'system' as const,
-                  content: `Lakeview: ${data.data.lakeview_summary}`,
-                  timestamp: new Date(stepTimestamp),
-                  sessionId: sessionId,
-                  stepId: stepId
-                });
-              }
-              
-              const currentMessages = sessions.find(s => s.id === sessionId)?.messages || [];
-              const sseStoreMsg = {
-                id: stepId + '_sse',
-                type: 'system' as const,
-                content: 'SSE步骤',
-                timestamp: new Date(stepTimestamp),
-                sessionId: sessionId,
-                stepId: stepId,
-                sse_step: sseInfo
-              };
-              updateSession(sessionId, {
-                messages: [...currentMessages, sseStoreMsg, ...stepMessage]
-              });
-          } else if (data.type === 'completed') {
-            setCurrentSteps(data.data.steps || []);
-            
-            // Add completion summary
-            const completionMessage = {
-              id: makeMsgId(),
-              type: 'system' as const,
-              content: `✅ 任务完成\n执行时间: ${data.data.execution_time?.toFixed(2)}s\n步骤数: ${data.data.steps_count}\n结果: ${data.data.final_result || '成功'}`,
-              timestamp: new Date(),
-              sessionId: sessionId
-            };
-            
-            const currentMessages = sessions.find(s => s.id === sessionId)?.messages || [];
-            updateSession(sessionId, {
-              messages: [...currentMessages, completionMessage]
-            });
-
-            // Ensure lakeview summary reply exists
-            const lv = data.data.lakeview_summary;
-            const hasLv = !!lv && typeof lv === 'string' && lv.trim().length > 0;
-            if (!hasLv) {
-              const stepNames = (data.data.steps || []).map((st: any) => st.tool_calls?.map((t: any) => t.name).join(', ')).filter(Boolean);
-              const toolsUsed = stepNames.length ? Array.from(new Set(stepNames.join(', ').split(',').map((s: string) => s.trim()).filter(Boolean))).join(', ') : '-';
-              const fallbackLv = `Lakeview: 执行完成。使用工具: ${toolsUsed}。最终结果: ${data.data.final_result || '成功'}`;
-              const lvMsg = {
-                id: makeMsgId(),
-                type: 'system' as const,
-                content: fallbackLv,
-                timestamp: new Date(),
-                sessionId: sessionId
-              };
-              const msgs2 = (sessions.find(s => s.id === sessionId)?.messages || []).concat([lvMsg]);
-              updateSession(sessionId, { messages: msgs2 });
-            } else {
-              const lvMsg = {
-                id: makeMsgId(),
-                type: 'system' as const,
-                content: `Lakeview: ${String(lv)}`,
-                timestamp: new Date(),
-                sessionId: sessionId
-              };
-              const msgs2 = (sessions.find(s => s.id === sessionId)?.messages || []).concat([lvMsg]);
-              updateSession(sessionId, { messages: msgs2 });
+              // Ignore start path announcements in UI to avoid overshadowing the user's task message.
+              return;
             }
-            
+          if (data.type === 'bubble' && data.data) {
+            const role = (data.data.role || 'agent') as 'user' | 'agent' | 'system' | 'error';
+            const content = String(data.data.content || '').trim();
+            const bubbleId = String(data.data.id || '');
+            useAppStore.getState().upsertSessionBubble(sessionId, bubbleId || makeMsgId(), {
+              id: bubbleId || makeMsgId(),
+              type: role,
+              content: content,
+            } as any);
+            return;
           }
-          }
-      // Unified streaming mode - remove non-streaming path
-      try {
-        // Use the streaming implementation directly
-        setIsStreaming(true);
-        setCurrentSteps([]);
-        
-        await apiClient.runInteractiveTaskStream(
-          {
-            session_id: sessionId,
-            task: message,
-            working_dir: workspaceRoot,
-            prompt: systemPrompt as any,
-            enable_quality_review: qualityReviewEnabled,
-            quality_review_rules: qualityReviewRules,
-          },
-          (data) => {
-            console.log('Stream data received:', data);
-            
-            // Debug: Log the raw data structure
-            if (data.type === 'step' && data.data.llm_response) {
-              console.log('LLM Response Debug:', {
-                content_excerpt: JSON.stringify(data.data.llm_response.content_excerpt),
-                content_length: data.data.llm_response.content_excerpt?.length,
-                finish_reason: data.data.llm_response.finish_reason,
-                model: data.data.llm_response.model,
-                usage: data.data.llm_response.usage
-              });
+            if (data.type === 'step' && data.data) {
+              // Step events are broken down into bubble messages by the server (content/reflection/tool calls/taskdone).
+              // Frontend ignores raw step aggregation to avoid overriding user/bubble messages.
+              return;
             }
-            
-            if (data.type === 'start') {
-              console.log('Session started:', data.data);
-              const taskText = (data.data && data.data.task) ? String(data.data.task) : message;
-              updateSession(sessionId!, {
-                messages: [
-                  ...(sessions.find(s => s.id === sessionId)?.messages || []),
-                  {
-                    id: 'task_' + Date.now(),
-                    type: 'system' as const,
-                    content: `task: ${taskText}`,
-                    timestamp: new Date(),
-                    sessionId: sessionId!
-                  }
-                ]
-              });
-            } else if (data.type === 'step') {
-              setCurrentSteps(prev => [...prev, data.data]);
-              
-              // Process the step data and create meaningful messages
-              const stepMessage = [];
-
-              // Required fields summary
-              const stepNumber = data.data.step_number;
-              const stepTimestamp = data.data.timestamp;
-              const stepId = `step_${stepNumber}_${stepTimestamp}`;
-              const completed = String((data.data.state || '').toUpperCase() === 'COMPLETED');
-              stepMessage.push({
-                id: stepId + '_summary',
-                type: 'system' as const,
-                content: `步骤: ${stepNumber ?? '-'} | 完成: ${completed}`,
-                timestamp: new Date(stepTimestamp),
-                sessionId: sessionId,
-                stepId: stepId,
-              });
-              
-              // Add LLM response content if available
-              if (data.data.llm_response) {
-                // Use full content if available, otherwise use content_excerpt
-                const llmContent = data.data.llm_response.content || data.data.llm_response.content_excerpt || '';
-                const content = llmContent.trim();
-                
-                console.log('LLM response debug:', {
-                  has_full_content: !!data.data.llm_response.content,
-                  has_excerpt: !!data.data.llm_response.content_excerpt,
-                  content_preview: content.substring(0, 100),
-                  content_length: content.length,
-                  finish_reason: data.data.llm_response.finish_reason,
-                  has_tool_calls: !!(data.data.llm_response.tool_calls && data.data.llm_response.tool_calls.length > 0)
-                });
-                
-                if (content.length > 0) {
-                  stepMessage.push({
-                  id: stepId + '_response',
-                  type: 'agent' as const,
-                  content: content,
-                  timestamp: new Date(stepTimestamp),
-                  sessionId: sessionId,
-                  stepId: stepId,
-                  metadata: {
-                    model: data.data.llm_response.model,
-                    usage: data.data.llm_response.usage,
-                    finish_reason: data.data.llm_response.finish_reason,
-                    has_tool_calls: !!(data.data.llm_response.tool_calls && data.data.llm_response.tool_calls.length > 0)
-                  }
-                });
-                  // Also log finish_reason when present
-                  if (data.data.llm_response.finish_reason) {
-                    stepMessage.push({
-                      id: stepId + '_finish_reason',
-                      type: 'system' as const,
-                      content: `finish_reason: ${data.data.llm_response.finish_reason}`,
-                      timestamp: new Date(stepTimestamp),
-                      sessionId: sessionId,
-                      stepId: stepId,
-                    });
-                  }
-                } else if (data.data.llm_response.tool_calls && data.data.llm_response.tool_calls.length > 0) {
-                  // If no text content but has tool calls, show tool execution status
-                  const toolCallNames = data.data.llm_response.tool_calls.map((tool: any) => tool.name).join(', ');
-                  stepMessage.push({
-                    id: stepId + '_tools',
-                    type: 'agent' as const,
-                    content: `🔧 正在执行工具: ${toolCallNames}`,
-                    timestamp: new Date(stepTimestamp),
-                    sessionId: sessionId,
-                    stepId: stepId,
-                    metadata: {
-                      model: data.data.llm_response.model,
-                      usage: data.data.llm_response.usage,
-                      finish_reason: data.data.llm_response.finish_reason,
-                      is_tool_execution: true
-                    }
-                  });
-                  // Explicitly print tool calls array
-                  stepMessage.push({
-                    id: stepId + '_tool_calls_list',
-                    type: 'system' as const,
-                    content: `tool_calls: ${JSON.stringify(data.data.llm_response.tool_calls)}`,
-                    timestamp: new Date(stepTimestamp),
-                    sessionId: sessionId,
-                    stepId: stepId,
-                  });
-                } else {
-                  // Even if content is empty, show model thinking status
-                  stepMessage.push({
-                    id: stepId + '_thinking',
-                    type: 'agent' as const,
-                    content: '🤔 AI正在思考中...',
-                    timestamp: new Date(stepTimestamp),
-                    sessionId: sessionId,
-                    stepId: stepId,
-                    metadata: {
-                      model: data.data.llm_response.model,
-                      usage: data.data.llm_response.usage,
-                      finish_reason: data.data.llm_response.finish_reason,
-                      is_thinking: true
-                    }
-                  });
-                  // Describe empty content reason
-                  stepMessage.push({
-                    id: data.data.step_id + '_empty_reason',
-                    type: 'system' as const,
-                    content: `LLM 内容为空。finish_reason=${data.data.llm_response.finish_reason || 'unknown'}，tool_calls=${(data.data.llm_response.tool_calls && data.data.llm_response.tool_calls.length > 0) ? 'present' : 'none'}`,
-                    timestamp: new Date(data.data.timestamp),
-                    sessionId: sessionId,
-                    stepId: data.data.step_id,
-                  });
-                }
-              }
-              
-              // Add tool calls information (simplified - backend only provides name and call_id)
-              if (data.data.tool_calls && data.data.tool_calls.length > 0) {
-                const toolNames = data.data.tool_calls.map((tool: any) => tool.name).join(', ');
-                const toolCallCount = data.data.tool_calls.length;
-                
-                stepMessage.push({
-                  id: stepId + '_tools',
-                  type: 'system' as const,
-                  content: `🔧 执行工具 (${toolCallCount}): ${toolNames}`,
-                  timestamp: new Date(stepTimestamp),
-                  sessionId: sessionId,
-                  stepId: stepId
-                });
-
-                // Add tool results summary if available
-                if (data.data.tool_results_summary) {
-                  const { count = 0, success_count = 0, error_count = 0 } = data.data.tool_results_summary;
-                  stepMessage.push({
-                    id: stepId + '_tool_results',
-                    type: 'system' as const,
-                    content: `📊 工具执行结果: 总计${count}, 成功${success_count}, 失败${error_count}`,
-                    timestamp: new Date(stepTimestamp),
-                    sessionId: sessionId,
-                    stepId: stepId
-                  });
-                }
-              }
-              
-              // Add reflection if available
-              if (data.data.reflection) {
-                stepMessage.push({
-                  id: stepId + '_reflection',
-                  type: 'system' as const,
-                  content: `反思: ${data.data.reflection}`,
-                  timestamp: new Date(stepTimestamp),
-                  sessionId: sessionId,
-                  stepId: stepId
-                });
-              }
-
-              // Add lakeview summary if available
-              if (data.data.lakeview_summary) {
-                stepMessage.push({
-                  id: stepId + '_lakeview',
-                  type: 'system' as const,
-                  content: `Lakeview: ${data.data.lakeview_summary}`,
-                  timestamp: new Date(stepTimestamp),
-                  sessionId: sessionId,
-                  stepId: stepId
-                });
-              }
-              
-              // Add all step messages to session
-              if (stepMessage.length > 0) {
-                const currentMessages = sessions.find(s => s.id === sessionId)?.messages || [];
-                updateSession(sessionId, {
-                  messages: [...currentMessages, ...stepMessage]
-                });
-              }
-          } else if (data.type === 'completed') {
-            setCurrentSteps(data.data.steps || []);
-            
-            // Add completion summary
-            const completionMessage = {
-              id: 'completion_' + Date.now(),
-              type: 'system' as const,
-              content: `✅ 任务完成\n执行时间: ${data.data.execution_time?.toFixed(2)}s\n步骤数: ${data.data.steps_count}\n结果: ${data.data.final_result || '成功'}`,
-              timestamp: new Date(),
-              sessionId: sessionId
-            };
-            
-            const currentMessages = sessions.find(s => s.id === sessionId)?.messages || [];
-            updateSession(sessionId, {
-              messages: [...currentMessages, completionMessage]
-            });
-
-            // Ensure lakeview summary reply exists
-            const lv = data.data.lakeview_summary;
-            const hasLv = !!lv && typeof lv === 'string' && lv.trim().length > 0;
-            if (!hasLv) {
-              const stepNames = (data.data.steps || []).map((st: any) => st.tool_calls?.map((t: any) => t.name).join(', ')).filter(Boolean);
-              const toolsUsed = stepNames.length ? Array.from(new Set(stepNames.join(', ').split(',').map((s: string) => s.trim()).filter(Boolean))).join(', ') : '-';
-              const fallbackLv = `Lakeview: 执行完成。使用工具: ${toolsUsed}。最终结果: ${data.data.final_result || '成功'}`;
-              const lvMsg = {
-                id: 'lakeview_' + Date.now(),
-                type: 'system' as const,
-                content: fallbackLv,
-                timestamp: new Date(),
-                sessionId: sessionId
-              };
-              const msgs2 = (sessions.find(s => s.id === sessionId)?.messages || []).concat([lvMsg]);
-              updateSession(sessionId, { messages: msgs2 });
-            } else {
-              const lvMsg = {
-                id: 'lakeview_' + Date.now(),
-                type: 'system' as const,
-                content: `Lakeview: ${String(lv)}`,
-                timestamp: new Date(),
-                sessionId: sessionId
-              };
-              const msgs2 = (sessions.find(s => s.id === sessionId)?.messages || []).concat([lvMsg]);
-              updateSession(sessionId, { messages: msgs2 });
+            if (data.type === 'completed') {
+              setIsStreaming(false);
+              return;
             }
-          }
-          },
-          (error) => {
-            console.error('Streaming error:', error);
-            toast.error('流式处理出错');
-            
-            // Add error message to session
-            updateSession(sessionId, {
-              messages: [...(sessions.find(s => s.id === sessionId)?.messages || []), {
-                id: 'error_' + Date.now(),
-                type: 'error' as const,
-                content: '流式处理出错: ' + error.message,
-                timestamp: new Date(),
-                sessionId: sessionId
-              }]
-            });
           }
         );
       } catch (error) {
-      console.error('Failed to run task:', error);
-      toast.error('执行任务失败，请检查后端服务状态');
-      setIsStreaming(false);
+        console.error('Failed to run task:', error);
+        appendMessage('执行任务失败，请检查后端服务状态', 'error');
+        setIsStreaming(false);
+      }
     }
   };
 
@@ -1036,10 +512,9 @@ function App() {
         // Add to open files and set as active
         addOpenFile(editorFile);
         setActiveFile(relativePath || filePath);
-        
-        toast.success(`文件 ${(relativePath || filePath)} 加载成功`);
+        appendMessage(`文件 ${(relativePath || filePath)} 加载成功`);
       } else {
-        toast.warning('文件内容为空');
+        appendMessage('文件内容为空');
       }
     } catch (error: any) {
       console.error('Failed to read file:', error);
@@ -1049,11 +524,11 @@ function App() {
           : filePath.startsWith('/workspace')
             ? filePath.replace(/^\/workspace\/?/, '')
             : filePath;
-        toast.error(`文件不存在: ${rp}`);
+        appendMessage(`文件不存在: ${rp}`, 'error');
       } else if (error.response?.status === 403) {
-        toast.error('没有权限读取该文件');
+        appendMessage('没有权限读取该文件', 'error');
       } else {
-        toast.error(`读取文件失败: ${error.message}`);
+        appendMessage(`读取文件失败: ${error.message}`, 'error');
       }
     }
   };
@@ -1105,7 +580,7 @@ function App() {
   return (
     <ErrorBoundary>
       <div className="h-screen flex flex-col bg-background">
-        <Toaster position="top-right" />
+        
         
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b bg-background">
@@ -1143,7 +618,7 @@ function App() {
                       token = `[workspace:${obj.absolute}]`;
                     } else if (obj.type === 'online') {
                       display = `online:${obj.documentId}`;
-                      token = `[online:documentId=${obj.documentId} path=/Online/${obj.documentId}.md]`;
+                      token = `[online:documentId=${obj.documentId} tool=online_doc_tool command=detail arguments={"document_id":"${obj.documentId}"}]`;
                     }
                     if (display && token) {
                       setCommandAttachments((prev) => [...prev, { display, token }]);
@@ -1156,6 +631,14 @@ function App() {
                 <div key={idx} className="flex items-center gap-1 px-2 py-1 bg-muted rounded">
                   <FileIcon className="h-4 w-4" />
                   <span className="text-xs">{att.display}</span>
+                  <button
+                    className="text-xs text-muted-foreground hover:text-destructive"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setCommandAttachments((prev) => prev.filter((_, i) => i !== idx));
+                    }}
+                    title="移除"
+                  >移除</button>
                 </div>
               ))}
               <input
@@ -1193,6 +676,9 @@ function App() {
           </div>
         </div>
 
+        {/* Runtime Log Panel (Cmd+Shift+J) */}
+        <RuntimeLogPanel />
+
         {isModelModalOpen && (
           <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
             <div className="bg-background border rounded-md shadow-xl w-[720px] max-w-[90vw]">
@@ -1217,17 +703,17 @@ function App() {
                           <span className="text-xs text-muted-foreground">{m.provider} · {m.model} · {m.baseUrl}</span>
                         </div>
                         <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => {
-                              setSelectedModelName(m.name);
-                              setSelectedProvider(m.provider);
-                              setModelBaseUrl(m.baseUrl);
-                              setModelName(m.model);
-                              setApiKey(m.apiKey);
-                              toast.success('模型已选中');
-                            }}
-                            className="px-2 py-1 text-xs bg-secondary rounded"
-                          >选中</button>
+                    <button
+                      onClick={() => {
+                        setSelectedModelName(m.name);
+                        setSelectedProvider(m.provider);
+                        setModelBaseUrl(m.baseUrl);
+                        setModelName(m.model);
+                        setApiKey(m.apiKey);
+                        appendMessage('模型已选中');
+                      }}
+                      className="px-2 py-1 text-xs bg-secondary rounded"
+                    >选中</button>
                         </div>
                       </div>
                     ))}
@@ -1292,19 +778,7 @@ function App() {
 
         
 
-        {isConsoleOpen && (
-          <div className="fixed inset-0 z-[60] pointer-events-none">
-            <div className="absolute inset-0 flex items-end justify-stretch pointer-events-none">
-              <div className="w-full h-[40%] bg-background border-t shadow-lg pointer-events-auto overflow-auto">
-                <StreamingConsole 
-                  steps={currentSteps}
-                  isStreaming={isStreaming}
-                  messages={sessions.find(s => s.id === currentSessionId)?.messages || []}
-                />
-              </div>
-            </div>
-          </div>
-        )}
+        {/* Removed message console; WS bubbles are shown as system toasts */}
         
             {/* System Settings Dialog */}
             <SystemSettings
@@ -1328,27 +802,27 @@ function App() {
               onQualityReviewEnabledChange={setQualityReviewEnabled}
               onQualityReviewRulesChange={setQualityReviewRules}
               onViewPrompt={async (name: string) => {
-                try {
-                  const found = systemPrompts.find(p => p.name === name);
-                  if (!found) throw new Error('Prompt not found');
-                  const full = await apiClient.getStoredPromptById(Number(found.id));
-                  setPromptView({ open: true, name: full.name, content: full.content });
-                } catch {
-                  toast.error('获取详情失败');
-                }
-              }}
-              onEditPrompt={async (name: string) => {
-                try {
-                  const found = systemPrompts.find(p => p.name === name);
-                  if (!found) throw new Error('Prompt not found');
-                  const full = await apiClient.getStoredPromptById(Number(found.id));
-                  let payload: any = {};
-                  try { payload = JSON.parse(full.content); } catch { void 0; }
-                  setPromptEdit({ open: true, name: full.name, content: (payload.text ?? full.content), enable_quality_review: !!payload.enable_quality_review, quality_review_rules: (payload.quality_review_rules ?? '') });
-                } catch {
-                  toast.error('获取详情失败');
-                }
-              }}
+                  try {
+                    const found = systemPrompts.find(p => p.name === name);
+                    if (!found) throw new Error('Prompt not found');
+                    const full = await apiClient.getStoredPromptById(Number(found.id));
+                    setPromptView({ open: true, name: full.name, content: full.content });
+                  } catch {
+                  appendMessage('获取详情失败', 'error');
+                  }
+                }}
+                onEditPrompt={async (name: string) => {
+                  try {
+                    const found = systemPrompts.find(p => p.name === name);
+                    if (!found) throw new Error('Prompt not found');
+                    const full = await apiClient.getStoredPromptById(Number(found.id));
+                    let payload: any = {};
+                    try { payload = JSON.parse(full.content); } catch { void 0; }
+                    setPromptEdit({ open: true, name: full.name, content: (payload.text ?? full.content), enable_quality_review: !!payload.enable_quality_review, quality_review_rules: (payload.quality_review_rules ?? '') });
+                  } catch {
+                  appendMessage('获取详情失败', 'error');
+                  }
+                }}
             />
 
       {/* Prompt View Modal */}
@@ -1428,10 +902,10 @@ function App() {
                         }
                       }));
                       setSystemPrompts(items);
-                      toast.success('提示词已更新');
+                      appendMessage('提示词已更新');
                       setPromptEdit(null);
                     } catch {
-                      toast.error('更新失败');
+                      appendMessage('更新失败', 'error');
                     }
                   }}
                   className="px-3 py-1 text-sm bg-primary text-primary-foreground rounded"

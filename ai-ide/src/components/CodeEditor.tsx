@@ -4,7 +4,7 @@ import { Save, X, Circle, Edit3, Split } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useAppStore } from '../lib/store';
 import { apiClient } from '../lib/api';
-import { toast } from 'sonner';
+import Toast from '../lib/toast';
 import { MarkdownPreview } from './MarkdownPreview';
 
 interface CodeEditorProps {
@@ -15,6 +15,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ className }) => {
   const { openFiles, activeFilePath, updateOpenFile, removeOpenFile } = useAppStore();
   const [isSaving, setIsSaving] = React.useState(false);
   const [previewMode, setPreviewMode] = React.useState<'edit' | 'split'>('edit');
+  const [previewType, setPreviewType] = React.useState<'markdown' | 'html'>('markdown');
   const [isFullscreen, setIsFullscreen] = React.useState(false);
   const [isPreviewHidden, setPreviewHidden] = React.useState(false);
 
@@ -28,10 +29,10 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ className }) => {
       const workspace = '/workspace'; // This should come from store
       await apiClient.writeFile(workspace, activeFile.path, activeFile.content);
       updateOpenFile(activeFile.path, { isDirty: false });
-      toast.success('文件已保存');
+      Toast.success('文件已保存');
     } catch (error) {
       console.error('Failed to save file:', error);
-      toast.error('保存文件失败');
+      Toast.error('保存文件失败');
     } finally {
       setIsSaving(false);
     }
@@ -203,6 +204,30 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ className }) => {
                 <Split className="h-3 w-3" />
                 分屏
               </button>
+              <button
+                onClick={() => { setPreviewType('html'); setPreviewMode('split'); }}
+                className={cn(
+                  "px-2 py-1 text-xs rounded transition-colors flex items-center gap-1",
+                  previewType === 'html' && previewMode === 'split'
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent"
+                )}
+                title="HTML预览"
+              >
+                HTML预览
+              </button>
+              <button
+                onClick={() => { setPreviewType('markdown'); setPreviewMode('split'); }}
+                className={cn(
+                  "px-2 py-1 text-xs rounded transition-colors flex items-center gap-1",
+                  previewType === 'markdown' && previewMode === 'split'
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent"
+                )}
+                title="Markdown预览"
+              >
+                Markdown预览
+              </button>
               
             </div>
           )}
@@ -226,9 +251,9 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ className }) => {
       {/* Editor / Markdown Preview */}
       <div className="flex-1 flex min-h-0">
         {activeFile && (activeFile.path.endsWith('.md') || activeFile.path.endsWith('.markdown')) && previewMode === 'split' ? (
-          <div className={cn("flex h-full min-h-0", 'flex-row')}>
+          <div className={cn("grid h-full min-h-0 w-full", 'grid-cols-2')}>
             {previewMode === 'split' && (
-              <div className="flex-1 border-r overflow-y-auto">
+              <div className="overflow-y-auto border-r">
                 <Editor
                   height="100%"
                   language={getLanguage(activeFile.path)}
@@ -249,7 +274,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ className }) => {
               </div>
             )}
             <div className={cn(
-              'flex-1 overflow-y-auto min-h-0 h-full',
+              'overflow-y-auto min-h-0 h-full w-full',
               isPreviewHidden && 'hidden'
             )}>
               <MarkdownPreview
@@ -266,6 +291,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ className }) => {
                   lineHeight: 'relaxed',
                   theme: 'auto'
                 }}
+                renderMode={previewType}
               />
             </div>
           </div>

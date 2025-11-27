@@ -1,0 +1,269 @@
+openapi: 3.0.3
+info:
+  title: Trae Agent API
+  version: 0.1.0
+servers:
+  - url: http://localhost:8090
+paths:
+  /health:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+    post:
+      responses:
+        '200':
+          description: OK
+  /agent/interactive/start:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InteractiveStartRequest'
+      responses:
+        '200':
+          description: Started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                  trajectory_file:
+                    type: string
+                  working_dir:
+                    type: string
+  /agent/interactive/task/stream:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InteractiveTaskRequest'
+      responses:
+        '200':
+          description: SSE stream of agent steps
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /storage/prompt/write:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromptRequest'
+      responses:
+        '200':
+          description: Prompt stored
+  /storage/prompt/get:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromptQuery'
+      responses:
+        '200':
+          description: Prompt fetched
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  name:
+                    type: string
+                  content:
+                    type: string
+  /storage/model-config/write:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelConfigRequest'
+      responses:
+        '200':
+          description: Model config stored
+  /storage/model-config/get:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelConfigQuery'
+      responses:
+        '200':
+          description: Model config fetched
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelConfigResponse'
+  /agent/test-model:
+    get:
+      parameters:
+        - in: query
+          name: provider
+          schema:
+            type: string
+        - in: query
+          name: model_base_url
+          schema:
+            type: string
+        - in: query
+          name: api_key
+          schema:
+            type: string
+        - in: query
+          name: name
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Connectivity OK
+components:
+  schemas:
+    InteractiveStartRequest:
+      type: object
+      properties:
+        provider:
+          type: string
+        model:
+          type: string
+        model_base_url:
+          type: string
+        api_key:
+          type: string
+        config_file:
+          type: string
+          default: trae_config.yaml
+        max_steps:
+          type: integer
+        trajectory_file:
+          type: string
+        working_dir:
+          type: string
+        console_type:
+          type: string
+          default: simple
+        agent_type:
+          type: string
+          default: trae_agent
+        docker_keep:
+          type: boolean
+        prompt:
+          type: string
+        agent_mode_config:
+          $ref: '#/components/schemas/AgentModeConfig'
+    InteractiveTaskRequest:
+      type: object
+      properties:
+        session_id:
+          type: string
+        task:
+          type: string
+        file_path:
+          type: string
+        working_dir:
+          type: string
+        must_patch:
+          type: boolean
+        patch_path:
+          type: string
+        prompt:
+          type: string
+        model_config_name:
+          type: string
+        agent_mode_config:
+          $ref: '#/components/schemas/AgentModeConfig'
+    AgentModeConfig:
+      type: object
+      properties:
+        mode_name:
+          type: string
+        system_prompt:
+          type: string
+      description: 当提供 system_prompt 时优先于 prompt 应用
+    PromptRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        content:
+          type: string
+      required: [name, content]
+    PromptQuery:
+      type: object
+      properties:
+        name:
+          type: string
+      required: [name]
+    ModelConfigRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        base_url:
+          type: string
+        api_key:
+          type: string
+        temperature:
+          type: number
+        top_p:
+          type: number
+        top_k:
+          type: integer
+        max_tokens:
+          type: integer
+      required: [name, provider, model, base_url, api_key]
+    ModelConfigQuery:
+      type: object
+      properties:
+        name:
+          type: string
+      required: [name]
+    ModelConfigResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        base_url:
+          type: string
+        api_key:
+          type: string
+        temperature:
+          type: string
+        top_p:
+          type: string
+        top_k:
+          type: string
+        max_tokens:
+          type: string

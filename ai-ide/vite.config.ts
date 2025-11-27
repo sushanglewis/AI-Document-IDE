@@ -22,6 +22,12 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path,
       },
+      '/ws': {
+        target: 'http://localhost:8090',
+        changeOrigin: true,
+        ws: true,
+        rewrite: (path) => path,
+      },
       '/workspace': {
         target: 'http://localhost:8090',
         changeOrigin: true,

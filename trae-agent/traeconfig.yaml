@@ -1,0 +1,28 @@
+agents:
+  trae_agent:
+    enable_lakeview: false
+    model: default_model
+    max_steps: 50
+    tools:
+      - bash
+      - str_replace_based_edit_tool
+      - sequentialthinking
+      - task_done
+
+model_providers:
+  openrouter:
+    api_key: ""
+    provider: openrouter
+    base_url: http://localhost:9997/v1
+
+models:
+  default_model:
+    model_provider: openrouter
+    model: Qwen3-32B
+    temperature: 0.5
+    top_p: 1.0
+    top_k: 0
+    parallel_tool_calls: true
+    max_retries: 1
+    max_tokens: 4096
+    supports_tool_calling: true
