@@ -3,7 +3,7 @@ max_steps: 20
 model_providers:
   openrouter:
     provider: openrouter
-    api_key: ""
+    api_key: "123123"
     base_url: http://localhost:9997/v1
     api_version: null
 models:

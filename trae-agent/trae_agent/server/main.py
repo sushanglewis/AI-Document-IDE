@@ -2361,7 +2361,10 @@ def _get_online_base_url() -> str:
             ).fetchone()
             if rec and rec[0]:
                 return str(rec[0])
-            default = "http://10.0.2.34:7876"
+            
+            # Default from env, fallback to legacy IP if not set
+            default = os.getenv("ONLINE_BASE_URL", "http://10.0.2.34:7876")
+            
             db.execute(
                 "INSERT INTO public.settings(name, value) VALUES('online_base_url', :v) ON CONFLICT (name) DO UPDATE SET value=excluded.value",
                 {"v": default},
@@ -2369,7 +2372,7 @@ def _get_online_base_url() -> str:
             db.commit()
             return default
     except Exception:
-        return "http://10.0.2.34:7876"
+        return os.getenv("ONLINE_BASE_URL", "http://10.0.2.34:7876")
 
 @app.get("/online/base-url")
 def get_online_base_url():

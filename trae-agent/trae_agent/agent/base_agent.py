@@ -45,6 +45,12 @@ class BaseAgent(ABC):
             tools_registry[tool_name](model_provider=self._model_config.model_provider.provider)
             for tool_name in agent_config.tools
         ]
+
+        # Inject LLM Client into tools that need it
+        for tool in self._tools:
+            if hasattr(tool, "set_llm_client"):
+                tool.set_llm_client(self._llm_client)
+
         self.docker_keep = docker_keep
         self.docker_manager: DockerManager | None = None
         original_tool_executor = ToolExecutor(self._tools)

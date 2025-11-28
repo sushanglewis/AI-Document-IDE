@@ -28,6 +28,13 @@ class QualityReviewTool(Tool):
             ToolParameter(name="quality_review_rules", type="string", description="Quality review rules (plain text)", required=True),
         ]
 
+    def __init__(self, model_provider: str | None = None) -> None:
+        super().__init__(model_provider)
+        self._llm_client: LLMClient | None = None
+
+    def set_llm_client(self, client: LLMClient) -> None:
+        self._llm_client = client
+
     def _prepare_model(self) -> ModelConfig:
         provider = str(self.model_provider or os.getenv("DEFAULT_PROVIDER", "openrouter"))
         api_key = os.getenv(provider.upper() + "_API_KEY", "")
@@ -75,15 +82,23 @@ class QualityReviewTool(Tool):
 
         pr = prev_result if isinstance(prev_result, str) else ""
 
-        model_config = self._prepare_model()
-        llm_client = LLMClient(model_config)
-        # Attach recorder to the LLM client so interactions are captured in the same trajectory
-        try:
-            recorder = self._prepare_recorder()
-            if recorder:
-                llm_client.set_trajectory_recorder(recorder)
-        except Exception:
-            pass
+        if self._llm_client:
+            llm_client = self._llm_client
+            # model_config is needed for chat method, but LLMClient usually stores it.
+            # However, chat() signature often takes model_config override.
+            # Let's check LLMClient.chat signature.
+            # Assuming llm_client.model_config is available or we pass None to use default.
+            model_config = getattr(llm_client, "model_config", None) or self._prepare_model()
+        else:
+            model_config = self._prepare_model()
+            llm_client = LLMClient(model_config)
+            # Attach recorder to the LLM client so interactions are captured in the same trajectory
+            try:
+                recorder = self._prepare_recorder()
+                if recorder:
+                    llm_client.set_trajectory_recorder(recorder)
+            except Exception:
+                pass
 
         sys_prefix = (
             "你是文档质量审查助手。请仅依据用户提供的审查规则进行评估，并以中文输出结论。"

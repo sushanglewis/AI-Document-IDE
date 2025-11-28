@@ -3,6 +3,7 @@ import json as _json
 import asyncio
 import urllib.request
 import urllib.error
+import os
 
 from trae_agent.tools.base import Tool, ToolCallArguments, ToolExecResult, ToolParameter
 from trae_agent.tools.run import maybe_truncate, MAX_RESPONSE_LEN
@@ -76,7 +77,7 @@ class OnlineDocTool(Tool):
         base_url = await self._get_online_base_url()
         print(f"[OnlineDocTool] Using base_url: {base_url}", flush=True)
         if not base_url:
-            base_url = "http://10.0.2.34:7876"
+            base_url = os.getenv("ONLINE_BASE_URL", "http://10.0.2.34:7876")
 
         headers = {
             "User-Agent": "trae-agent",

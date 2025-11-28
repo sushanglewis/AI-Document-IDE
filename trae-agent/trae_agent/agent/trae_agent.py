@@ -296,3 +296,19 @@ class TraeAgent(BaseAgent):
                 # Use a generic server name for cleanup since we don't track which server each client is for
                 await client.cleanup("cleanup")
         self.mcp_clients.clear()
+
+    def ensure_quality_review_tool(self) -> None:
+        """Ensure the quality review tool is available and configured."""
+        # Check if already exists
+        for tool in self._tools:
+            if tool.get_name() == "quality_review":
+                if hasattr(tool, "set_llm_client"):
+                    tool.set_llm_client(self._llm_client)
+                return
+
+        # Create and add if not exists
+        if "quality_review" in tools_registry:
+            tool = tools_registry["quality_review"](model_provider=self._model_config.model_provider.provider)
+            if hasattr(tool, "set_llm_client"):
+                tool.set_llm_client(self._llm_client)
+            self._tools.append(tool)
