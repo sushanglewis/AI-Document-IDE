@@ -240,6 +240,40 @@ class LakeView:
 
         return None
 
+    async def create_lakeview_step_from_dict(self, step_data: dict) -> LakeViewStep | None:
+        from trae_agent.agent.agent_basics import AgentStep, AgentStepState
+
+        lr = step_data.get("llm_response") or {}
+        content = lr.get("content") or ""
+
+        tcs_raw = lr.get("tool_calls") or []
+        tool_calls: list[ToolCall] = []
+        for j, tc in enumerate(tcs_raw, start=1):
+            name = tc.get("name")
+            args = tc.get("arguments")
+            call_id = tc.get("call_id") or tc.get("id") or f"lc_step_{j}"
+            if name is None:
+                continue
+            tool_calls.append(ToolCall(name=name, call_id=call_id, arguments=args, id=tc.get("id")))
+
+        usage_raw = lr.get("usage") or {}
+        usage = LLMUsage(
+            input_tokens=int(usage_raw.get("input_tokens") or usage_raw.get("prompt_tokens") or 0),
+            output_tokens=int(usage_raw.get("output_tokens") or usage_raw.get("completion_tokens") or 0),
+        )
+
+        llm_resp = LLMResponse(content=content, tool_calls=tool_calls or None, usage=usage)
+
+        agent_step = AgentStep(
+            step_number=step_data.get("step_number", 0),
+            llm_response=llm_resp,
+            tool_calls=tool_calls or None,
+            tool_results=None,
+            state=AgentStepState.CALLING_TOOL,
+        )
+
+        return await self.create_lakeview_step(agent_step)
+
     async def summarize_session(self) -> str:
         from trae_agent.agent.agent_basics import AgentStep, AgentStepState
         # 1. Resolve trajectory file path

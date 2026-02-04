@@ -1,11 +1,31 @@
-import React from 'react';
-import { Settings, File as FileIcon } from 'lucide-react';
+import React, { useEffect } from 'react';
+import { Settings, File as FileIcon, Files, Moon, Sun, Maximize, Minimize, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Database, Workflow, GitBranch, Globe } from 'lucide-react';
+import { ToolsPanel } from './components/ToolsPanel';
+import { GitPanel } from './components/GitPanel';
+import { OnlineDocPanel } from './components/OnlineDocPanel';
+import { loader } from '@monaco-editor/react';
 import { FileTree } from './components/FileTree';
+
+// Configure Monaco Editor loader to use unpkg instead of jsdelivr (which is timing out)
+loader.config({ paths: { vs: 'https://unpkg.com/monaco-editor@0.54.0/min/vs' } });
+
+import { KnowledgeBaseManager } from './components/KnowledgeBaseManager';
+import { KnowledgeRetrievalPanel } from './components/KnowledgeRetrievalPanel';
 import { CodeEditor } from './components/CodeEditor';
-import { SystemSettings } from './components/SystemSettings';
-import { useAppStore, Session } from './lib/store';
+// import { DiffViewer } from './components/DiffViewer'; // Removed as per refactoring
+import { SettingsPage } from './components/SettingsPage';
+import { ChatPanel } from './components/ChatPanel';
+import { useAppStore, Session, Message } from './lib/store';
 import { apiClient } from './lib/api';
 import RuntimeLogPanel from './components/RuntimeLogPanel';
+
+interface Tool {
+  name: string;
+  description: string;
+  custom_name?: string;
+  initial_name_zh?: string;
+  is_custom?: boolean;
+}
  
  
 
@@ -64,9 +84,84 @@ function App() {
     setSystemPrompt,
     sessions,
     addOpenFile,
-    setActiveFile
+    setActiveFile,
+    addPendingDiff,
+    chatPanelCollapsed,
+    toggleChatPanel,
+    theme,
+    setTheme,
+    isFullscreen,
+    toggleFullscreen,
+    enabledTools,
+    setEnabledTools
   } = useAppStore();
   
+  const [activeSidebarItem, setActiveSidebarItem] = React.useState<string | null>('explorer');
+
+  // Theme Effect
+  useEffect(() => {
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [theme]);
+
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (!document.hidden) {
+        // User switched back to this tab.
+        // 1. Poll Git Status to see if anything changed while away
+        try {
+            // We can leverage GitPanel logic or just check modified files.
+            // Let's fetch status and see if any open file is modified but not in diff mode.
+            const res = await apiClient.gitStatus(workspaceRoot);
+            const store = useAppStore.getState();
+            const openFiles = store.openFiles;
+            
+            const modifiedPaths = new Set<string>();
+            res.files.forEach(f => {
+                if (f.status.includes('M') || f.status.includes('A')) {
+                    modifiedPaths.add(f.path);
+                }
+            });
+            
+            for (const file of openFiles) {
+                if (modifiedPaths.has(file.path) && !file.originalContent) {
+                    // Fetch original content to enable diff view
+                    const oldRes = await apiClient.gitShow(workspaceRoot, file.path, 'HEAD');
+                    const newRes = await apiClient.readFile(workspaceRoot, file.path);
+                    store.updateOpenFile(file.path, { 
+                        content: newRes.content,
+                        originalContent: oldRes.content 
+                    });
+                }
+            }
+        } catch (e) {
+            console.error("Failed to sync git status on focus", e);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [workspaceRoot]);
+
+  // Fullscreen Effect
+  useEffect(() => {
+    if (isFullscreen) {
+      document.documentElement.requestFullscreen().catch((e) => {
+        console.error('Failed to enter fullscreen:', e);
+      });
+    } else {
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch((e) => {
+          console.error('Failed to exit fullscreen:', e);
+        });
+      }
+    }
+  }, [isFullscreen]);
+
   const [isStreaming, setIsStreaming] = React.useState(false);
   // Removed: currentSteps state; using system toasts for streaming updates
   const [isBackendAvailable, setIsBackendAvailable] = React.useState(true);
@@ -87,15 +182,9 @@ function App() {
   const [modelBaseUrl, setModelBaseUrl] = React.useState<string>('http://10.0.2.22:9997/v1');
   const [modelName, setModelName] = React.useState<string>('Qwen3-32B');
   const [apiKey, setApiKey] = React.useState<string>('sk-xinference');
-  const [savedModels, setSavedModels] = React.useState<Array<{ name: string; provider: string; baseUrl: string; model: string; apiKey: string }>>([
-    { name: 'Xinference-OpenRouter-Qwen3', provider: 'openrouter', baseUrl: 'http://10.0.2.22:9997/v1', model: 'Qwen3-32B', apiKey: 'sk-xinference' },
-  ]);
-  const [selectedModelName, setSelectedModelName] = React.useState<string>('Xinference-OpenRouter-Qwen3');
   const [isSystemSettingsOpen, setIsSystemSettingsOpen] = React.useState(false);
   const [systemPrompts, setSystemPrompts] = React.useState<Array<{id: string, name: string, content: string}>>([]);
   const [selectedPromptName, setSelectedPromptName] = React.useState<string | undefined>(undefined);
-  const [isModelModalOpen, setIsModelModalOpen] = React.useState(false);
-  const [isCreatingModel, setIsCreatingModel] = React.useState(false);
   const [isCommandOpen, setIsCommandOpen] = React.useState(false);
   const [commandText, setCommandText] = React.useState('');
   const [commandAttachments, setCommandAttachments] = React.useState<Array<{display: string; token: string}>>([]);
@@ -103,6 +192,18 @@ function App() {
   const [qualityReviewRules, setQualityReviewRules] = React.useState<string>("");
   const [promptView, setPromptView] = React.useState<{open: boolean; name: string; content: string} | null>(null);
   const [promptEdit, setPromptEdit] = React.useState<{open: boolean; name: string; content: string; enable_quality_review?: boolean; quality_review_rules?: string} | null>(null);
+  
+  // Knowledge Retrieval State
+  const [isKnowledgeRetrievalOpen, setIsKnowledgeRetrievalOpen] = React.useState(false);
+  const [knowledgeRetrievalTarget, setKnowledgeRetrievalTarget] = React.useState<any>(null);
+
+  // const [diffViewer, setDiffViewer] = React.useState<{ open: boolean; path: string; oldStr: string; newStr: string; taskId: string } | null>(null);
+
+  // Tool Selection State
+  const [availableTools, setAvailableTools] = React.useState<Tool[]>([]);
+  
+  // Diff View State
+  // Removed diffData as str_replace now uses inline diffs via pendingDiffs
 
   // Initialize workspace and create initial session
   React.useEffect(() => {
@@ -129,6 +230,27 @@ function App() {
           setFileTree(tree);
         } else {
           setFileTree([]);
+        }
+
+        // Fetch available tools
+        try {
+           const toolsData = await apiClient.getAvailableTools();
+           if (toolsData && Array.isArray(toolsData.tools)) {
+               setAvailableTools(toolsData.tools);
+               // Select all tools by default if none enabled
+               const toolNames = toolsData.tools.map(t => t.name);
+               if (enabledTools.length === 0) {
+                 setEnabledTools(toolNames);
+               }
+           }
+        } catch (e) {
+            console.error('Failed to fetch tools:', e);
+            // Fallback
+            const fallbackTools = ['edit_tool', 'mock_edit_tool', 'online_doc_tool', 'sequentialthinking'];
+            setAvailableTools(fallbackTools.map(name => ({ name, description: name, initial_name_zh: name })));
+            if (enabledTools.length === 0) {
+              setEnabledTools(fallbackTools);
+            }
         }
 
         // Create initial session if none exists
@@ -193,6 +315,58 @@ function App() {
 
 
 
+  // Load sessions on mount
+  useEffect(() => {
+    const fetchSessions = async () => {
+      try {
+        const list = await apiClient.listSessions();
+        const formattedSessions = list.map((s: any) => ({
+          id: s.id,
+          name: s.title || s.id,
+          createdAt: new Date(s.created_at),
+          updatedAt: new Date(s.updated_at),
+          workingDir: workspaceRoot, 
+          configFile: 'trae_config.yaml',
+          status: 'active' as Session['status'],
+          messages: [], 
+          systemPrompt: 'DOCUMENT_AGENT_SYSTEM_PROMPT' as Session['systemPrompt']
+        }));
+        if (formattedSessions.length > 0) {
+            setSessions(formattedSessions);
+        }
+      } catch (e) {
+        console.error("Failed to load sessions", e);
+      }
+    };
+    fetchSessions();
+  }, []);
+
+  // @ts-ignore
+  const handleSelectSession = async (sid: string) => {
+      setCurrentSession(sid);
+      try {
+        const msgs = await apiClient.getSessionMessages(sid);
+        const formattedMsgs = msgs.map((m: any) => {
+            let type = m.role === 'user' ? 'user' : 'agent';
+            if (m.meta && m.meta.type === 'bubble') type = 'bubble';
+            if (m.role === 'system') type = 'system';
+            
+            return {
+                id: m.id.toString(),
+                type: type as Message['type'],
+                content: m.content,
+                timestamp: new Date(m.created_at),
+                sessionId: sid,
+                metadata: m.meta
+            };
+        });
+        
+        updateSession(sid, { messages: formattedMsgs });
+      } catch (e) {
+        console.error("Failed to load session messages", e);
+      }
+  };
+
   const handleTestConnectivity = async () => {
     try {
       await apiClient.testModelConnectivity({
@@ -219,16 +393,7 @@ function App() {
     }
   };
 
-  const handleSaveModel = () => {
-    const name = `${selectedProvider}-${modelName}`;
-    const item = { name, provider: selectedProvider, baseUrl: modelBaseUrl, model: modelName, apiKey };
-    setSavedModels((prev) => {
-      const others = prev.filter((m) => m.name !== name);
-      return [...others, item];
-    });
-    setSelectedModelName(name);
-    appendMessage('模型配置已保存');
-  };
+
 
   // System Settings Functions
   const handleSaveSystemPrompt = async (prompt: {id: string, name: string, content: string}) => {
@@ -288,26 +453,23 @@ function App() {
 
   const createNewSession = async (workspacePath?: string, onlineMode?: boolean) => {
     try {
-      const chosen = savedModels.find((m) => m.name === selectedModelName) || {
-        provider: selectedProvider,
-        baseUrl: modelBaseUrl,
-        model: modelName,
-        apiKey,
-      } as any;
       const session = await apiClient.startInteractiveSession({
         working_dir: workspacePath || workspaceRoot,
         agent_type: 'trae_agent',
         max_steps: 20,
-        provider: chosen.provider,
-        model: chosen.model,
-        model_base_url: chosen.baseUrl,
-        api_key: chosen.apiKey,
+        provider: selectedProvider,
+        model: modelName,
+        model_base_url: modelBaseUrl,
+        api_key: apiKey,
         prompt: systemPrompt as any,
         agent_mode_config: { mode_name: selectedPromptName, system_prompt: (selectedPromptName || systemPrompt) as any },
         console_type: 'lakeview',
+        enable_lakeview: true, // Force enable LakeView
+        lakeview_url: 'ws://localhost:8000/ws/agent/interactive/task', // This might be overridden by backend but good to have
         enable_quality_review: qualityReviewEnabled,
         quality_review_rules: qualityReviewRules,
         use_online_mode: !!onlineMode,
+        tools: enabledTools,
       });
       
       const newSession: Session = {
@@ -330,6 +492,27 @@ function App() {
       appendMessage('创建会话失败，请确保后端服务正常运行', 'error');
       return null;
     }
+  };
+
+  const handleCreateSessionUI = async () => {
+      const sid = await createNewSession();
+      if (sid) appendMessage('新会话已创建', 'system', sid);
+  };
+
+  const handleKillSessionUI = async () => {
+      if (!currentSessionId) {
+        appendMessage('无活动会话可关闭', 'error');
+        return;
+      }
+      try {
+        await apiClient.closeInteractiveSession(currentSessionId);
+        updateSession(currentSessionId, { status: 'completed' });
+        setCurrentSession('');
+        setIsStreaming(false);
+        appendMessage('当前会话已关闭');
+      } catch (e) {
+        appendMessage('关闭会话失败', 'error');
+      }
   };
 
   const handleSendMessage = async (message: string, useStreaming: boolean) => {
@@ -381,16 +564,17 @@ function App() {
           on.forEach(id => out.push(`online:${id}`));
           return out;
         };
-        const stripTokens = (text: string) => text.replace(/\[[^\]]+\]/g, '').trim();
+        
         const attachments = extractAttachments(message);
-        const clean = stripTokens(message);
         const hashId = (s: string) => { let h = 5381; for (let i = 0; i < s.length; i++) { h = ((h << 5) + h) + s.charCodeAt(i); h &= 0xffffffff; } return Math.abs(h).toString(16); };
         const userId = `user_${hashId('user:user')}`;
-        const agentId = `agent_${hashId(selectedModelName || modelName)}`;
+        const agentId = `agent_${hashId(modelName)}`;
+        
+        // Use raw message with tokens for both local display and backend
         useAppStore.getState().appendSessionMessage(sessionId, {
           id: makeMsgId(),
           type: 'user' as const,
-          content: clean,
+          content: message,
           attachments,
           timestamp: new Date(),
           sessionId: sessionId,
@@ -410,10 +594,43 @@ function App() {
         })();
 
         // Event-driven: use interactive WS bubbles directly; show as system toasts
+        let taskPayload = message;
+        
+        // Inject Context for Active File if available
+        // Removed: Automatic full-file context injection was causing token waste and confusing the LLM.
+        // The LLM should rely on user-provided capsules or use the 'view' tool if needed.
+        // If explicit context is needed, it should be part of the user selection (capsules).
+        /*
+        const store = useAppStore.getState();
+        if (store.activeFilePath) {
+            const activeFile = store.openFiles.find(f => f.path === store.activeFilePath);
+            if (activeFile && activeFile.content) {
+                const pid = `pid_${makeMsgId().substring(0, 8)}`;
+                const content = activeFile.content;
+                const contextXml = `
+<context_injection>
+<paragraph id="${pid}" path="${store.activeFilePath}">
+<content>${content}</content>
+</paragraph>
+</context_injection>`;
+                taskPayload = `${message}\n${contextXml}`;
+                
+                // Store paragraph context locally for frontend lookup
+                store.addParagraphContext({
+                    id: pid,
+                    path: store.activeFilePath,
+                    start: 0,
+                    end: content.length,
+                    content: content
+                });
+            }
+        }
+        */
+
         await apiClient.runInteractiveTaskWS(
           {
             session_id: sessionId,
-            task: message,
+            task: taskPayload,
             working_dir: workspaceRoot,
             prompt: (selectedPromptText || systemPrompt) as any,
             agent_mode_config: { mode_name: selectedPromptName, system_prompt: (selectedPromptText || systemPrompt) as any },
@@ -422,6 +639,144 @@ function App() {
           },
           (data) => {
             console.log('Stream data received:', data);
+            
+            if (data.type === 'diff') {
+              console.log('Received diff message:', data);
+              if (data.data && data.data.file_path && data.data.changes) {
+                data.data.changes.forEach((change: any) => {
+                  addPendingDiff(data.data.file_path, change);
+                });
+                // Optionally notify user
+                appendMessage(`收到针对 ${data.data.file_path} 的修改建议`, 'system');
+              }
+              return;
+            }
+
+            if (data.type === 'str_replace') {
+              console.log('Received str_replace message:', data);
+              
+              const store = useAppStore.getState();
+              const activeFilePath = store.activeFilePath;
+              const taskId = data.task_id || `diff_${Date.now()}`;
+
+              if (activeFilePath) {
+                 const activeFile = store.openFiles.find(f => f.path === activeFilePath);
+                 if (activeFile && activeFile.content) {
+                    let start = -1;
+                    let end = -1;
+                    let originalContent = data.old_str || '';
+                    let newContent = data.new_str || '';
+                    let cmd = 'replace';
+                    let startLine = -1;
+                    let endLine = -1;
+                    let startOffset = -1;
+                    let endOffset = -1;
+
+                    // 1. Parse XML to get metadata (Priority for metadata)
+                    if (data.xml_content) {
+                        const xml = data.xml_content;
+                        const commandMatch = xml.match(/<command>([^<]+)<\/command>/);
+                        const startMatch = xml.match(/<start>(\d+)<\/start>/);
+                        const endMatch = xml.match(/<end>(\d+)<\/end>/);
+                        const newContentMatch = xml.match(/<new_content>([\s\S]*?)<\/new_content>/);
+                        const contentMatch = xml.match(/<content>([\s\S]*?)<\/content>/);
+                        
+                        if (commandMatch) cmd = commandMatch[1];
+                        // <start>/<end> are character offsets
+                        if (startMatch) startOffset = parseInt(startMatch[1]);
+                        if (endMatch) endOffset = parseInt(endMatch[1]);
+                        if (newContentMatch) newContent = newContentMatch[1];
+                        if (contentMatch) originalContent = contentMatch[1];
+                    } else {
+                        // Fallback to legacy fields
+                        if (typeof data.insert_line === 'number') {
+                             startLine = data.insert_line;
+                             cmd = 'insert';
+                        } else if (typeof data.start === 'number') {
+                             // data.start is likely character offset if coming from mock_edit_tool
+                             startOffset = data.start;
+                             if (typeof data.end === 'number') endOffset = data.end;
+                        }
+                    }
+
+                    // 2. Strategy A: Content Match (High Priority)
+                    if (originalContent) {
+                        const idx = activeFile.content.indexOf(originalContent);
+                        if (idx !== -1) {
+                            start = idx;
+                            end = idx + originalContent.length;
+                        }
+                    }
+                    
+                    // 2.5 Strategy A2: Character Offset (If Content Match failed)
+                    if (start === -1 && startOffset !== -1) {
+                        // Validate bounds
+                        if (startOffset <= activeFile.content.length) {
+                            start = startOffset;
+                            end = endOffset !== -1 ? endOffset : start;
+                        }
+                    }
+
+                    // 3. Strategy B: Line Number to Offset Fallback
+                    if (start === -1 && startLine !== -1) {
+                        const lines = activeFile.content.split('\n');
+                        
+                        if (cmd === 'insert') {
+                             // Insert AFTER the line (assuming 1-based startLine)
+                             // e.g. insert_line=27 means insert after line 27
+                             if (startLine <= lines.length) {
+                                const linesBefore = lines.slice(0, startLine);
+                                start = linesBefore.join('\n').length;
+                                // Add newline if we are not at the very beginning (startLine=0)
+                                if (startLine > 0) start += 1;
+                                else start = 0;
+                                end = start;
+                             }
+                        } else {
+                             // Replace/Delete using Line Numbers (1-based)
+                             // Start Offset
+                             const lineIdx = Math.max(0, startLine - 1);
+                             if (lineIdx < lines.length) {
+                                 const preLines = lines.slice(0, lineIdx);
+                                 start = preLines.join('\n').length + (lineIdx > 0 ? 1 : 0);
+                                 
+                                 // End Offset
+                                 if (endLine !== -1) {
+                                     const endLineIdx = Math.max(0, endLine);
+                                     const postLines = lines.slice(0, endLineIdx);
+                                     end = postLines.join('\n').length + (endLineIdx > 0 ? 1 : 0);
+                                 } else {
+                                     // If no end line, assume same as start? Or just start offset?
+                                     // For safety, if no end line and no content match, we might abort or assume single line.
+                                     // Let's assume single line if endLine is missing but startLine is present.
+                                     const postLines = lines.slice(0, lineIdx + 1);
+                                     end = postLines.join('\n').length + (lineIdx + 1 > 0 ? 1 : 0);
+                                 }
+                             }
+                        }
+                    }
+
+                    if (start !== -1) {
+                        addPendingDiff(activeFilePath, {
+                            id: taskId,
+                            start: start,
+                            end: end,
+                            original_content: originalContent,
+                            new_content: newContent,
+                            metadata: {
+                                command: cmd as any
+                            }
+                        });
+                        return;
+                    }
+                 }
+              }
+              
+              // Fallback if no active file or content not found:
+              console.warn('Could not apply str_replace to active file');
+              appendMessage('无法在当前文件中定位修改内容，请确认文件是否打开', 'error');
+              return;
+            }
             
             // Debug: Log the raw data structure
             if (data.type === 'step' && data.data.llm_response) {
@@ -438,17 +793,249 @@ function App() {
               // Ignore start path announcements in UI to avoid overshadowing the user's task message.
               return;
             }
-          if (data.type === 'bubble' && data.data) {
-            const role = (data.data.role || 'agent') as 'user' | 'agent' | 'system' | 'error';
-            const content = String(data.data.content || '').trim();
-            const bubbleId = String(data.data.id || '');
-            useAppStore.getState().upsertSessionBubble(sessionId, bubbleId || makeMsgId(), {
-              id: bubbleId || makeMsgId(),
-              type: role,
-              content: content,
-            } as any);
-            return;
-          }
+            if (data.type === 'bubble' && data.data) {
+              const role = (data.data.role === 'user' || data.data.role === 'system' || data.data.role === 'error' || data.data.role === 'agent') ? data.data.role : 'bubble';
+              const content = String(data.data.content || '').trim();
+              const bubbleId = String(data.data.id || '');
+              
+              // Check for final result
+              if (data.data.emoji === '🏁' || data.data.title === '任务完成') {
+                  setIsStreaming(false);
+              }
+
+              useAppStore.getState().upsertSessionBubble(sessionId, bubbleId || makeMsgId(), {
+                id: bubbleId || makeMsgId(),
+                type: role,
+                content: content,
+              } as any);
+              return;
+            }
+            
+            if ((data.type === 'file_changed' || data.type === 'file_change') && data.data) {
+                const path = data.data.path;
+                console.log('File changed event:', path);
+                (async () => {
+                    try {
+                       const currentWorkspace = useAppStore.getState().workspaceRoot || workspaceRoot;
+                       let relPath = path;
+                       if (path.startsWith(currentWorkspace)) {
+                           relPath = path.slice(currentWorkspace.length);
+                           if (relPath.startsWith('/')) relPath = relPath.slice(1);
+                       }
+                       
+                       const requestId = `diff_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+                       console.log('Fetching diff for:', relPath, 'in workspace:', currentWorkspace, 'request_id:', requestId);
+                       
+                       // 1. Get Git Diff to find what changed
+                       // Use contextLines=0 to get minimal diffs (strict line changes without context)
+                       const gitDiffRes = await apiClient.gitDiff(currentWorkspace, relPath, 0, requestId);
+                       
+                       // Verify Request ID matches
+                       if (gitDiffRes.request_id && gitDiffRes.request_id !== requestId) {
+                           console.warn("Received diff response for mismatching request ID", gitDiffRes.request_id, requestId);
+                       }
+                       
+                       const diffStr = gitDiffRes.diff;
+
+                       // Parse filename from diff to ensure we target the correct file
+                       if (diffStr) {
+                           const lines = diffStr.split('\n');
+                           for (const line of lines) {
+                               if (line.startsWith('+++ ')) {
+                                   try {
+                                       let raw = line.slice(4).trim();
+                                       if (raw.startsWith('b/')) raw = raw.slice(2);
+                                       else if (raw.startsWith('"b/')) raw = raw.slice(3).replace(/"$/, '');
+                                       
+                                       if (raw.includes('\\')) {
+                                            const bytes = [];
+                                            let i = 0;
+                                            while (i < raw.length) {
+                                                if (raw[i] === '\\' && i + 3 < raw.length && /^[0-7]/.test(raw[i+1]) && /^[0-7]/.test(raw[i+2]) && /^[0-7]/.test(raw[i+3])) {
+                                                    bytes.push(parseInt(raw.slice(i+1, i+4), 8));
+                                                    i += 4;
+                                                } else {
+                                                    bytes.push(raw.charCodeAt(i));
+                                                    i++;
+                                                }
+                                            }
+                                            relPath = new TextDecoder('utf-8').decode(new Uint8Array(bytes));
+                                       } else {
+                                            relPath = raw;
+                                       }
+                                       console.log('Updated relPath from diff:', relPath);
+                                   } catch (e) {
+                                       console.warn('Failed to parse path from diff:', line, e);
+                                   }
+                                   break;
+                               }
+                           }
+                       }
+
+                       const oldRes = await apiClient.gitShow(currentWorkspace, relPath, 'HEAD');
+                       const newRes = await apiClient.readFile(currentWorkspace, relPath);
+                       const oldContent = oldRes.content;
+                       
+                       // Parse Git Diff again to get Line Numbers
+                       // We will use the line numbers to calculate offsets in oldContent.
+                       if (diffStr) {
+                           const lines = diffStr.split('\n');
+                           let oldLine = 0;
+                           let newLine = 0;
+                           let hunkIndex = 0;
+                           
+                           let inHunk = false;
+                           for (let i=0; i<lines.length; i++) {
+                               const line = lines[i];
+                               if (line.startsWith('@@ ')) {
+                                   inHunk = true;
+                                   const match = line.match(/@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@/);
+                                   if (match) {
+                                       oldLine = parseInt(match[1]);
+                                       newLine = parseInt(match[3]);
+                                   }
+                               } else if (inHunk && line.startsWith('-')) {
+                                   // Deletion/Replacement Old Side
+                                   // We need to group consecutive changes
+                                   let startL = oldLine;
+                                   let content = line.slice(1);
+                                   let j = i + 1;
+                                   while (j < lines.length && (lines[j].startsWith('-') || lines[j].startsWith('+'))) {
+                                       if (lines[j].startsWith('-')) {
+                                           content += '\n' + lines[j].slice(1);
+                                           oldLine++; // Consumed old line
+                                       }
+                                       j++;
+                                   }
+                                   // Now find corresponding new content (if any)
+                                   let newC = '';
+                                   let k = i + 1;
+                                   // Reset k to find '+' lines in the same block
+                                   while (k < lines.length && (lines[k].startsWith('-') || lines[k].startsWith('+'))) {
+                                       if (lines[k].startsWith('+')) {
+                                            if (newC) newC += '\n';
+                                            newC += lines[k].slice(1);
+                                       }
+                                       k++;
+                                   }
+                                   
+                                   // Calculate Offsets in Old Content
+                                   const oldLines = oldContent.split('\n');
+                                   // startL is 1-based
+                                   const startIdx = Math.max(0, startL - 1);
+                                   // content has N lines.
+                                   const numOldLines = content.split('\n').length;
+                                   const endIdx = startIdx + numOldLines;
+                                   
+                                   const preLines = oldLines.slice(0, startIdx);
+                                   const startOffset = preLines.join('\n').length + (startIdx > 0 ? 1 : 0);
+                                   
+                                   const targetLines = oldLines.slice(startIdx, endIdx);
+                                   const endOffset = startOffset + targetLines.join('\n').length; // No extra newline at end of block usually
+                                   
+                                   // Add to pendingDiffs
+                                   // Bind button to request_id (append index for uniqueness if multiple hunks)
+                                   const diffId = `${requestId}_${hunkIndex++}`;
+                                   const diffItem = {
+                                       id: diffId,
+                                       start: startOffset,
+                                       end: endOffset,
+                                       original_content: content,
+                                       new_content: newC,
+                                       metadata: { source: 'git_diff', request_id: requestId }
+                                   };
+                                   
+                                   // Check duplication
+                                   const exists = useAppStore.getState().pendingDiffs[relPath]?.some(d => d.start === diffItem.start);
+                                   if (!exists) {
+                                        addPendingDiff(relPath, diffItem);
+                                   }
+                                   
+                                   // Advance outer loop
+                                   i = j - 1;
+                                   // Correct oldLine/newLine tracking is hard with mixed hunks, 
+                                   // but we only rely on the start of the hunk and consecutive lines.
+                                   oldLine++; // The current line was consumed
+                               } else if (inHunk && line.startsWith('+')) {
+                                   // Pure insertion (no preceding -)
+                                   // Check if previous line was - (handled above). If not, it's insertion.
+                                   const prev = lines[i-1];
+                                   if (!prev.startsWith('-')) {
+                                       // Insertion at oldLine
+                                       let newC = line.slice(1);
+                                       let j = i + 1;
+                                       while (j < lines.length && lines[j].startsWith('+')) {
+                                           newC += '\n' + lines[j].slice(1);
+                                           j++;
+                                       }
+                                       
+                                       const oldLines = oldContent.split('\n');
+                                       const startIdx = Math.max(0, oldLine - 1);
+                                       // Insertion point
+                                       const preLines = oldLines.slice(0, startIdx);
+                                       let startOffset = preLines.join('\n').length;
+                                       if (startIdx > 0) startOffset += 1;
+                                       
+                                       const diffId = `${requestId}_${hunkIndex++}`;
+                                       const diffItem = {
+                                           id: diffId,
+                                           start: startOffset,
+                                           end: startOffset, // Insert has 0 length in old
+                                           original_content: '',
+                                           new_content: newC,
+                                           metadata: { source: 'git_diff', request_id: requestId }
+                                       };
+                                        const exists = useAppStore.getState().pendingDiffs[relPath]?.some(d => d.start === diffItem.start);
+                                        if (!exists) {
+                                                addPendingDiff(relPath, diffItem);
+                                        }
+                                       i = j - 1;
+                                   }
+                                   newLine++;
+                               } else if (inHunk) {
+                                   // Context line
+                                   oldLine++;
+                                   newLine++;
+                               }
+                           }
+                       }
+
+                       // Update editor content to HEAD (Old) so we can render diffs
+                       // If we have pending diffs, we enforce showing Old Content
+                       const pendingDiffs = useAppStore.getState().pendingDiffs[relPath] || [];
+                       
+                       let newEditorContent = newRes.content;
+                       let newOriginalContent = oldRes.content;
+                       
+                       if (pendingDiffs.length > 0) {
+                           console.log('Pending diffs detected from Git, enforcing Inline Diff view with Old Content');
+                           newEditorContent = oldRes.content;
+                           newOriginalContent = undefined as any;
+                       }
+
+                       const editorFile = {
+                           path: relPath,
+                           content: newEditorContent,
+                           originalContent: newOriginalContent,
+                           isDirty: false,
+                           language: getFileLanguage(relPath)
+                       };
+                       
+                       const activeF = useAppStore.getState().openFiles.find(f => f.path === relPath || f.path === path);
+                       if (activeF) {
+                           useAppStore.getState().updateOpenFile(activeF.path, { content: newEditorContent, originalContent: newOriginalContent });
+                       } else {
+                           addOpenFile(editorFile);
+                       }
+                       setActiveFile(relPath);
+                       
+                    } catch(e) {
+                       console.error("Failed to load diff", e);
+                    }
+                })();
+                return;
+            }
+
             if (data.type === 'step' && data.data) {
               // Step events are broken down into bubble messages by the server (content/reflection/tool calls/taskdone).
               // Frontend ignores raw step aggregation to avoid overriding user/bubble messages.
@@ -583,19 +1170,45 @@ function App() {
         
         
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b bg-background">
+        <div className="flex items-center justify-between h-10 px-4 border-b bg-background shrink-0">
           <div className="flex items-center gap-4">
-            <h1 className="text-xl font-bold">AI IDE</h1>
+            <h1 className="text-sm font-bold">AI Doc</h1>
           </div>
-          <div className="flex items-center gap-2">
+          
+          {/* Right Actions */}
+          <div className="flex items-center gap-1">
             <button
-              onClick={() => setIsSystemSettingsOpen(true)}
-              className="p-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/90 transition-colors"
-              disabled={isStreaming}
-              aria-label="系统设置"
-              title="系统设置"
+              onClick={() => setActiveSidebarItem(activeSidebarItem ? null : 'explorer')}
+              className="p-1.5 rounded-md hover:bg-accent hover:text-accent-foreground text-muted-foreground transition-colors"
+              title={activeSidebarItem ? "收起侧边栏" : "展开文件列表"}
             >
-              <Settings className="h-4 w-4" />
+              {activeSidebarItem ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeftOpen className="w-4 h-4" />}
+            </button>
+            
+            <button
+              onClick={toggleChatPanel}
+              className="p-1.5 rounded-md hover:bg-accent hover:text-accent-foreground text-muted-foreground transition-colors"
+              title={!chatPanelCollapsed ? "收起会话窗口" : "展开会话窗口"}
+            >
+              {!chatPanelCollapsed ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
+            </button>
+
+            <div className="w-px h-4 bg-border mx-1" />
+
+            <button
+              onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+              className="p-1.5 rounded-md hover:bg-accent hover:text-accent-foreground text-muted-foreground transition-colors"
+              title={theme === 'light' ? "切换到沉浸模式" : "切换到白天模式"}
+            >
+              {theme === 'light' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
+            </button>
+
+            <button
+              onClick={toggleFullscreen}
+              className="p-1.5 rounded-md hover:bg-accent hover:text-accent-foreground text-muted-foreground transition-colors"
+              title={isFullscreen ? "退出全屏" : "进入全屏"}
+            >
+              {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
             </button>
           </div>
         </div>
@@ -665,165 +1278,163 @@ function App() {
         )}
         
         <div className="flex-1 flex overflow-hidden">
-          <div className="w-64 border-r bg-muted/30 flex flex-col overflow-hidden">
-            <FileTree onFileSelect={handleFileSelect} />
-          </div>
-          <div className="flex-1 flex flex-col">
-            <div className="flex-1 border-b overflow-auto">
-              <CodeEditor />
-            </div>
+          {/* Activity Bar */}
+          <div className="w-12 border-r bg-muted/40 flex flex-col items-center py-2 gap-2 z-20 shrink-0">
+            <button
+              onClick={() => setActiveSidebarItem(activeSidebarItem === 'explorer' ? null : 'explorer')}
+              className={`p-2 rounded-md transition-colors ${activeSidebarItem === 'explorer' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
+              title="资源管理器"
+            >
+              <Files className="h-5 w-5" />
+            </button>
+
+            <button
+              onClick={() => setActiveSidebarItem(activeSidebarItem === 'online' ? null : 'online')}
+              className={`p-2 rounded-md transition-colors ${activeSidebarItem === 'online' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
+              title="在线文档"
+            >
+              <Globe className="h-5 w-5" />
+            </button>
+
+            <button
+              onClick={() => setActiveSidebarItem(activeSidebarItem === 'git' ? null : 'git')}
+              className={`p-2 rounded-md transition-colors ${activeSidebarItem === 'git' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
+              title="源代码管理"
+            >
+              <GitBranch className="h-5 w-5" />
+            </button>
+
+            <button
+              onClick={() => setActiveSidebarItem(activeSidebarItem === 'knowledge' ? null : 'knowledge')}
+              className={`p-2 rounded-md transition-colors ${activeSidebarItem === 'knowledge' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
+              title="知识库"
+            >
+              <Database className="h-5 w-5" />
+            </button>
+
+            <button
+              onClick={() => setActiveSidebarItem(activeSidebarItem === 'dify-tools' ? null : 'dify-tools')}
+              className={`p-2 rounded-md transition-colors ${activeSidebarItem === 'dify-tools' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
+              title="TOOLS"
+            >
+              <Workflow className="h-5 w-5" />
+            </button>
             
+            <div className="flex-1" />
+            
+            <button
+              onClick={() => setIsSystemSettingsOpen(true)}
+              className={`p-2 rounded-md transition-colors ${isSystemSettingsOpen ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
+              title="系统设置"
+            >
+              <Settings className="h-5 w-5" />
+            </button>
           </div>
+
+          {/* Sidebar */}
+          {activeSidebarItem === 'explorer' && (
+            <div className="w-64 border-r bg-background flex flex-col overflow-hidden shrink-0 animate-in slide-in-from-left-5 duration-200">
+              <div className="h-9 flex items-center px-4 border-b text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                资源管理器
+              </div>
+              <FileTree onFileSelect={handleFileSelect} />
+            </div>
+          )}
+
+          {activeSidebarItem === 'online' && (
+            <div className="w-64 border-r bg-background flex flex-col overflow-hidden shrink-0 animate-in slide-in-from-left-5 duration-200">
+              <OnlineDocPanel />
+            </div>
+          )}
+
+          {activeSidebarItem === 'git' && (
+            <div className="w-64 border-r bg-background flex flex-col overflow-hidden shrink-0 animate-in slide-in-from-left-5 duration-200">
+              <div className="h-9 flex items-center px-4 border-b text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                源代码管理
+              </div>
+              <GitPanel workspace={workspaceRoot} onOpenFile={handleFileSelect} />
+            </div>
+          )}
+
+          {activeSidebarItem === 'knowledge' && (
+            <div className="w-64 border-r bg-background flex flex-col overflow-hidden shrink-0 animate-in slide-in-from-left-5 duration-200">
+              <KnowledgeBaseManager onRetrieveTest={(kb) => {
+                setKnowledgeRetrievalTarget(kb);
+                setIsKnowledgeRetrievalOpen(true);
+                setIsSystemSettingsOpen(false);
+              }} />
+            </div>
+          )}
+
+          {activeSidebarItem === 'dify-tools' && (
+            <div className="w-64 border-r bg-background flex flex-col overflow-hidden shrink-0 animate-in slide-in-from-left-5 duration-200">
+              <ToolsPanel />
+            </div>
+          )}
+
+          <div className="flex-1 flex flex-col min-w-0 bg-background">
+            {isSystemSettingsOpen ? (
+              <SettingsPage
+                onClose={() => setIsSystemSettingsOpen(false)}
+                systemPrompts={systemPrompts}
+                selectedPromptName={selectedPromptName}
+                onPromptChange={setSystemPrompt}
+                onSelectPrompt={setSelectedPromptName}
+                onSavePrompt={handleSaveSystemPrompt}
+                onDeletePrompt={handleDeleteSystemPrompt}
+                modelConfig={{
+                  provider: selectedProvider,
+                  model: modelName,
+                  apiKey: apiKey,
+                  baseUrl: modelBaseUrl
+                }}
+                onModelConfigChange={handleModelConfigChange}
+                qualityReviewEnabled={qualityReviewEnabled}
+                qualityReviewRules={qualityReviewRules}
+                onQualityReviewEnabledChange={setQualityReviewEnabled}
+                onQualityReviewRulesChange={setQualityReviewRules}
+                onTestConnectivity={handleTestConnectivity}
+              />
+            ) : isKnowledgeRetrievalOpen && knowledgeRetrievalTarget ? (
+              <KnowledgeRetrievalPanel 
+                kb={knowledgeRetrievalTarget}
+                onClose={() => setIsKnowledgeRetrievalOpen(false)}
+              />
+            ) : (
+              <div className="flex-1 border-b overflow-hidden flex flex-col">
+                <CodeEditor />
+              </div>
+            )}
+          </div>
+          {!chatPanelCollapsed && (
+            <ChatPanel 
+              className="w-96 border-l bg-background flex flex-col shadow-sm flex-shrink-0"
+              messages={
+                currentSessionId 
+                  ? (sessions.find(s => s.id === currentSessionId)?.messages || []) 
+                  : []
+              }
+              onSendMessage={(msg) => handleSendMessage(msg, true)}
+              isStreaming={isStreaming}
+              availableTools={availableTools}
+              selectedTools={enabledTools}
+              onToolsChange={setEnabledTools}
+              onCreateSession={handleCreateSessionUI}
+              onKillSession={handleKillSessionUI}
+            />
+          )}
         </div>
 
         {/* Runtime Log Panel (Cmd+Shift+J) */}
         <RuntimeLogPanel />
 
-        {isModelModalOpen && (
-          <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-            <div className="bg-background border rounded-md shadow-xl w-[720px] max-w-[90vw]">
-              <div className="flex items-center justify-between px-4 py-3 border-b">
-                <h2 className="text-lg font-semibold">模型管理</h2>
-                <button onClick={() => setIsModelModalOpen(false)} className="text-sm text-muted-foreground">关闭</button>
-              </div>
-              {!isCreatingModel ? (
-                <div className="p-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">已保存模型</span>
-                    <button onClick={() => setIsCreatingModel(true)} className="px-2 py-1 text-xs bg-muted rounded">新建模型</button>
-                  </div>
-                  <div className="max-h-[300px] overflow-auto border rounded">
-                    {savedModels.length === 0 && (
-                      <div className="p-4 text-sm text-muted-foreground">暂无已保存模型</div>
-                    )}
-                    {savedModels.map((m) => (
-                      <div key={m.name} className="flex items-center justify-between px-3 py-2 hover:bg-muted/30">
-                        <div className="flex flex-col">
-                          <span className="text-sm font-medium">{m.name}</span>
-                          <span className="text-xs text-muted-foreground">{m.provider} · {m.model} · {m.baseUrl}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => {
-                        setSelectedModelName(m.name);
-                        setSelectedProvider(m.provider);
-                        setModelBaseUrl(m.baseUrl);
-                        setModelName(m.model);
-                        setApiKey(m.apiKey);
-                        appendMessage('模型已选中');
-                      }}
-                      className="px-2 py-1 text-xs bg-secondary rounded"
-                    >选中</button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="flex justify-end gap-2">
-                    <button onClick={() => setIsModelModalOpen(false)} className="px-3 py-1 text-sm bg-primary text-primary-foreground rounded">确认</button>
-                  </div>
-                </div>
-              ) : (
-                <div className="p-4 space-y-3">
-                  <div className="flex items-center gap-2">
-                    <label className="text-sm w-28">客户端</label>
-                    <select
-                      value={selectedProvider}
-                      onChange={(e) => setSelectedProvider(e.target.value)}
-                      className="px-2 py-1 border rounded text-sm bg-background flex-1"
-                    >
-                      <option value="openrouter">OpenRouter / Xinference</option>
-                      <option value="openai">OpenAI</option>
-                      <option value="anthropic">Anthropic</option>
-                    </select>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <label className="text-sm w-28">Base URL</label>
-                    <input
-                      type="text"
-                      value={modelBaseUrl}
-                      onChange={(e) => setModelBaseUrl(e.target.value)}
-                      placeholder="http://host:port/v1"
-                      className="px-2 py-1 border rounded text-sm bg-background flex-1"
-                    />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <label className="text-sm w-28">Model Name</label>
-                    <input
-                      type="text"
-                      value={modelName}
-                      onChange={(e) => setModelName(e.target.value)}
-                      placeholder="Qwen3-32B"
-                      className="px-2 py-1 border rounded text-sm bg-background flex-1"
-                    />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <label className="text-sm w-28">API Key</label>
-                    <input
-                      type="text"
-                      value={apiKey}
-                      onChange={(e) => setApiKey(e.target.value)}
-                      placeholder="sk-..."
-                      className="px-2 py-1 border rounded text-sm bg-background flex-1"
-                    />
-                  </div>
-                  <div className="flex justify-end gap-2">
-                    <button onClick={handleTestConnectivity} className="px-3 py-1 text-sm bg-secondary rounded">测试</button>
-                    <button onClick={() => { handleSaveModel(); setIsCreatingModel(false); }} className="px-3 py-1 text-sm bg-muted rounded">保存</button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+
 
         
 
         {/* Removed message console; WS bubbles are shown as system toasts */}
         
-            {/* System Settings Dialog */}
-            <SystemSettings
-              open={isSystemSettingsOpen}
-              onOpenChange={setIsSystemSettingsOpen}
-              systemPrompts={systemPrompts}
-              selectedPromptName={selectedPromptName}
-              onPromptChange={setSystemPrompt}
-              onSelectPrompt={setSelectedPromptName}
-              onSavePrompt={handleSaveSystemPrompt}
-              onDeletePrompt={handleDeleteSystemPrompt}
-              modelConfig={{
-                provider: selectedProvider,
-                model: modelName,
-                apiKey: apiKey,
-                baseUrl: modelBaseUrl
-              }}
-              onModelConfigChange={handleModelConfigChange}
-              qualityReviewEnabled={qualityReviewEnabled}
-              qualityReviewRules={qualityReviewRules}
-              onQualityReviewEnabledChange={setQualityReviewEnabled}
-              onQualityReviewRulesChange={setQualityReviewRules}
-              onViewPrompt={async (name: string) => {
-                  try {
-                    const found = systemPrompts.find(p => p.name === name);
-                    if (!found) throw new Error('Prompt not found');
-                    const full = await apiClient.getStoredPromptById(Number(found.id));
-                    setPromptView({ open: true, name: full.name, content: full.content });
-                  } catch {
-                  appendMessage('获取详情失败', 'error');
-                  }
-                }}
-                onEditPrompt={async (name: string) => {
-                  try {
-                    const found = systemPrompts.find(p => p.name === name);
-                    if (!found) throw new Error('Prompt not found');
-                    const full = await apiClient.getStoredPromptById(Number(found.id));
-                    let payload: any = {};
-                    try { payload = JSON.parse(full.content); } catch { void 0; }
-                    setPromptEdit({ open: true, name: full.name, content: (payload.text ?? full.content), enable_quality_review: !!payload.enable_quality_review, quality_review_rules: (payload.quality_review_rules ?? '') });
-                  } catch {
-                  appendMessage('获取详情失败', 'error');
-                  }
-                }}
-            />
+
 
       {/* Prompt View Modal */}
       {promptView?.open && (
@@ -915,6 +1526,9 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* Diff Viewer Modal - REMOVED */}
+      {/* diffViewer?.open && ... */}
       </div>
     </ErrorBoundary>
   );

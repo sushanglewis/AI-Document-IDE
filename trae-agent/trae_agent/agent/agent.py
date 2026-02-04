@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 from enum import Enum
 
+from trae_agent.tools.base import Tool
 from trae_agent.utils.cli.cli_console import CLIConsole
 from trae_agent.utils.config import AgentConfig, Config
 from trae_agent.utils.trajectory_recorder import TrajectoryRecorder
@@ -20,6 +21,7 @@ class Agent:
         cli_console: CLIConsole | None = None,
         docker_config: dict | None = None,
         docker_keep: bool = True,
+        custom_tools: list[Tool] | None = None,
     ):
         if isinstance(agent_type, str):
             agent_type = AgentType(agent_type)
@@ -34,19 +36,21 @@ class Agent:
             self.trajectory_recorder = TrajectoryRecorder()
             self.trajectory_file = self.trajectory_recorder.get_trajectory_path()
 
-        match self.agent_type:
-            case AgentType.TraeAgent:
-                if config.trae_agent is None:
-                    raise ValueError("trae_agent_config is required for TraeAgent")
-                from .trae_agent import TraeAgent
+        if self.agent_type == AgentType.TraeAgent:
+            if config.trae_agent is None:
+                raise ValueError("trae_agent_config is required for TraeAgent")
+            from .trae_agent import TraeAgent
 
-                self.agent_config: AgentConfig = config.trae_agent
+            self.agent_config: AgentConfig = config.trae_agent
 
-                self.agent: TraeAgent = TraeAgent(
-                    self.agent_config, docker_config=docker_config, docker_keep=docker_keep
-                )
+            self.agent: TraeAgent = TraeAgent(
+                self.agent_config,
+                docker_config=docker_config,
+                docker_keep=docker_keep,
+                custom_tools=custom_tools,
+            )
 
-                self.agent.set_cli_console(cli_console)
+            self.agent.set_cli_console(cli_console)
 
         if cli_console:
             if config.trae_agent.enable_lakeview:

@@ -3,7 +3,7 @@ import { devtools, persist } from 'zustand/middleware';
 
 export interface Message {
   id: string;
-  type: 'user' | 'agent' | 'system' | 'error';
+  type: 'user' | 'agent' | 'system' | 'error' | 'bubble';
   content: string;
   timestamp: Date;
   sessionId?: string;
@@ -40,8 +40,36 @@ export interface FileNode {
 export interface EditorFile {
   path: string;
   content: string;
+  originalContent?: string; // For Diff View
   isDirty: boolean;
   language: string;
+}
+
+export interface DiffItem {
+  id: string;
+  start: number;
+  end: number;
+  original_content: string;
+  new_content: string;
+  metadata?: {
+      command?: 'replace' | 'insert' | 'delete';
+      paragraph_id?: string;
+      [key: string]: any;
+  };
+}
+
+export interface Attachment {
+  type: 'file' | 'context';
+  content: string; // For file: path; For context: xml content
+  metadata?: any;
+}
+
+export interface ParagraphContext {
+  id: string;
+  path: string;
+  start: number;
+  end: number;
+  content: string;
 }
 
 interface AppState {
@@ -56,10 +84,20 @@ interface AppState {
   openFiles: EditorFile[];
   activeFilePath: string | null;
   
+  // Interaction
+  pendingDiffs: Record<string, DiffItem[]>;
+  chatInput: string;
+  inputAttachments: Attachment[];
+
   // UI State
   isLoading: boolean;
   error: string | null;
   sidebarCollapsed: boolean;
+  chatPanelCollapsed: boolean;
+  theme: 'light' | 'dark';
+  isFullscreen: boolean;
+  enabledTools: string[];
+  setEnabledTools: (tools: string[]) => void;
   
   // Actions
   setSessions: (sessions: Session[]) => void;
@@ -79,9 +117,21 @@ interface AppState {
   removeOpenFile: (path: string) => void;
   setActiveFile: (path: string | null) => void;
   
+  setChatInput: (input: string) => void;
+  addInputAttachment: (attachment: Attachment) => void;
+  removeInputAttachment: (index: number) => void;
+  clearInputAttachments: () => void;
+
+  addPendingDiff: (path: string, diff: DiffItem) => void;
+  removePendingDiff: (path: string, diffId: string) => void;
+  clearPendingDiffs: (path: string) => void;
+
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
   toggleSidebar: () => void;
+  toggleChatPanel: () => void;
+  setTheme: (theme: 'light' | 'dark') => void;
+  toggleFullscreen: () => void;
 }
 
 export const useAppStore = create<AppState>()(
@@ -96,116 +146,155 @@ export const useAppStore = create<AppState>()(
         fileTree: [],
         openFiles: [],
         activeFilePath: null,
+        pendingDiffs: {},
+        chatInput: '',
+        inputAttachments: [],
         isLoading: false,
         error: null,
         sidebarCollapsed: false,
-
-        // Actions
+        chatPanelCollapsed: false,
+        theme: 'light',
+        isFullscreen: false,
+        enabledTools: [],
+        
         setSessions: (sessions) => set({ sessions }),
-        
-        addSession: (session) => set((state) => ({
+        addSession: (session) => set((state) => ({ 
           sessions: [...state.sessions, session],
-          currentSessionId: session.id
+          currentSessionId: session.id 
         })),
-        
         updateSession: (sessionId, updates) => set((state) => ({
-          sessions: state.sessions.map(session =>
-            session.id === sessionId
-              ? { ...session, ...updates, updatedAt: new Date() }
-              : session
+          sessions: state.sessions.map((s) => 
+            s.id === sessionId ? { ...s, ...updates, updatedAt: new Date() } : s
           )
         })),
-
         appendSessionMessage: (sessionId, message) => set((state) => ({
-          sessions: state.sessions.map(session =>
-            session.id === sessionId
-              ? { ...session, messages: [...session.messages, message], updatedAt: new Date() }
-              : session
-          )
-        })),
-
-        upsertSessionBubble: (sessionId, bubbleId, updates) => set((state) => ({
-          sessions: state.sessions.map(session => {
-            if (session.id !== sessionId) return session;
-            const idx = session.messages.findIndex(m => m.bubbleId === bubbleId);
-            if (idx >= 0) {
-              const prev = session.messages[idx];
-              const next: Message = { ...prev, ...updates, timestamp: new Date() } as Message;
-              const msgs = session.messages.slice();
-              msgs[idx] = next;
-              return { ...session, messages: msgs, updatedAt: new Date() };
+          sessions: state.sessions.map((s) => {
+            if (s.id === sessionId) {
+              const exists = s.messages.some(m => m.id === message.id);
+              if (exists) return s;
+              return { ...s, messages: [...s.messages, message], updatedAt: new Date() };
             }
-            const next: Message = {
-              id: updates.id as string || `${Date.now()}_${Math.random().toString(16).slice(2)}`,
-              type: (updates.type as any) || 'agent',
-              content: String(updates.content || ''),
-              timestamp: new Date(),
-              sessionId,
-              bubbleId,
-              metadata: updates.metadata,
-              attachments: updates.attachments as any,
-            };
-            return { ...session, messages: [...session.messages, next], updatedAt: new Date() };
+            return s;
           })
         })),
-        
-        setCurrentSession: (sessionId) => set({ currentSessionId: sessionId }),
-        
-        setSystemPrompt: (prompt) => set({ systemPrompt: prompt }),
-        
-        setWorkspaceRoot: (root) => set({ workspaceRoot: root }),
-        
-        setFileTree: (tree) => set({ fileTree: tree }),
-        
-        updateFileNode: (path, updates) => set((state) => ({
-          fileTree: updateNodeInTree(state.fileTree, path, updates)
+        upsertSessionBubble: (sessionId, bubbleId, updates) => set((state) => ({
+          sessions: state.sessions.map((s) => {
+            if (s.id === sessionId) {
+              const idx = s.messages.findIndex(m => m.id === bubbleId);
+              if (idx >= 0) {
+                const newMsgs = [...s.messages];
+                newMsgs[idx] = { ...newMsgs[idx], ...updates };
+                return { ...s, messages: newMsgs, updatedAt: new Date() };
+              } else {
+                // Create new if not exists (assuming it's a new bubble)
+                // But we need 'type', 'content' etc. from updates if it's new.
+                // Usually upsert implies create if missing.
+                const newMsg = {
+                   id: bubbleId,
+                   type: updates.type || 'agent', 
+                   content: updates.content || '',
+                   timestamp: new Date(),
+                   sessionId,
+                   ...updates
+                } as Message;
+                return { ...s, messages: [...s.messages, newMsg], updatedAt: new Date() };
+              }
+            }
+            return s;
+          })
         })),
+        setCurrentSession: (currentSessionId) => set({ currentSessionId }),
+        setSystemPrompt: (systemPrompt) => set({ systemPrompt }),
+        
+        setWorkspaceRoot: (workspaceRoot) => set({ workspaceRoot }),
+        setFileTree: (fileTree) => set({ fileTree }),
+        updateFileNode: (path, updates) => set((state) => {
+          const updateNode = (nodes: FileNode[]): FileNode[] => {
+            return nodes.map(node => {
+              if (node.path === path) {
+                return { ...node, ...updates };
+              }
+              if (node.children) {
+                return { ...node, children: updateNode(node.children) };
+              }
+              return node;
+            });
+          };
+          return { fileTree: updateNode(state.fileTree) };
+        }),
         
         addOpenFile: (file) => set((state) => {
-          const exists = state.openFiles.find(f => f.path === file.path);
-          if (exists) {
-            return { 
-              openFiles: state.openFiles.map(f => 
-                f.path === file.path ? file : f
-              ),
-              activeFilePath: file.path
-            };
-          }
-          return {
-            openFiles: [...state.openFiles, file],
-            activeFilePath: file.path
-          };
+          if (state.openFiles.some(f => f.path === file.path)) return state;
+          return { openFiles: [...state.openFiles, file] };
         }),
-        
         updateOpenFile: (path, updates) => set((state) => ({
-          openFiles: state.openFiles.map(file =>
-            file.path === path
-              ? { ...file, ...updates }
-              : file
+          openFiles: state.openFiles.map(f => 
+            f.path === path ? { ...f, ...updates } : f
           )
         })),
-        
         removeOpenFile: (path) => set((state) => {
-          const newOpenFiles = state.openFiles.filter(f => f.path !== path);
-          const newActiveFile = state.activeFilePath === path
-            ? newOpenFiles.length > 0 ? newOpenFiles[newOpenFiles.length - 1].path : null
-            : state.activeFilePath;
-          
-          return {
-            openFiles: newOpenFiles,
-            activeFilePath: newActiveFile
+          const newFiles = state.openFiles.filter(f => f.path !== path);
+          // If closing active file, activate another one
+          let newActive = state.activeFilePath;
+          if (state.activeFilePath === path) {
+            newActive = newFiles.length > 0 ? newFiles[newFiles.length - 1].path : null;
+          }
+          return { 
+            openFiles: newFiles,
+            activeFilePath: newActive
           };
         }),
-        
-        setActiveFile: (path) => set({ activeFilePath: path }),
-        
-        setLoading: (loading) => set({ isLoading: loading }),
+        setActiveFile: (activeFilePath) => set({ activeFilePath }),
+
+        setChatInput: (chatInput) => set({ chatInput }),
+        addInputAttachment: (attachment) => set((state) => ({ 
+          inputAttachments: [...state.inputAttachments, attachment] 
+        })),
+        removeInputAttachment: (index) => set((state) => ({
+          inputAttachments: state.inputAttachments.filter((_, i) => i !== index)
+        })),
+        clearInputAttachments: () => set({ inputAttachments: [] }),
+
+        addPendingDiff: (path, diff) => set((state) => {
+          const existing = state.pendingDiffs[path] || [];
+          // Check if already exists
+          if (existing.some(d => d.id === diff.id)) return state;
+          return {
+            pendingDiffs: {
+              ...state.pendingDiffs,
+              [path]: [...existing, diff]
+            }
+          };
+        }),
+        removePendingDiff: (path, diffId) => set((state) => {
+          const existing = state.pendingDiffs[path] || [];
+          return {
+            pendingDiffs: {
+              ...state.pendingDiffs,
+              [path]: existing.filter(d => d.id !== diffId)
+            }
+          };
+        }),
+        clearPendingDiffs: (path) => set((state) => {
+           const { [path]: _, ...rest } = state.pendingDiffs;
+           return { pendingDiffs: rest };
+        }),
+
+        setLoading: (isLoading) => set({ isLoading }),
         
         setError: (error) => set({ error }),
         
         toggleSidebar: () => set((state) => ({
           sidebarCollapsed: !state.sidebarCollapsed
         })),
+        toggleChatPanel: () => set((state) => ({
+          chatPanelCollapsed: !state.chatPanelCollapsed
+        })),
+        setTheme: (theme) => set({ theme }),
+        toggleFullscreen: () => set((state) => ({
+          isFullscreen: !state.isFullscreen
+        })),
+        setEnabledTools: (enabledTools) => set({ enabledTools }),
       }),
       {
         name: 'ai-ide-storage',
@@ -215,27 +304,14 @@ export const useAppStore = create<AppState>()(
           systemPrompt: state.systemPrompt,
           workspaceRoot: state.workspaceRoot,
           sidebarCollapsed: state.sidebarCollapsed,
+          chatPanelCollapsed: state.chatPanelCollapsed,
+          theme: state.theme,
           fileTree: state.fileTree,
           openFiles: state.openFiles,
           activeFilePath: state.activeFilePath,
+          enabledTools: state.enabledTools,
         }),
       }
     )
   )
 );
-
-// Helper function to update a node in the file tree
-function updateNodeInTree(tree: FileNode[], path: string, updates: Partial<FileNode>): FileNode[] {
-  return tree.map(node => {
-    if (node.path === path) {
-      return { ...node, ...updates };
-    }
-    if (node.children) {
-      return {
-        ...node,
-        children: updateNodeInTree(node.children, path, updates)
-      };
-    }
-    return node;
-  });
-}

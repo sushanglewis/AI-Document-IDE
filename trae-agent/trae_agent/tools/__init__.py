@@ -17,6 +17,8 @@ from trae_agent.tools.sequential_thinking_tool import SequentialThinkingTool
 from trae_agent.tools.quality_review_tool import QualityReviewTool
 from trae_agent.tools.task_done_tool import TaskDoneTool
 from trae_agent.tools.online_doc_tool import OnlineDocTool
+from trae_agent.tools.mock_edit_tool import MockTextEditorTool
+from trae_agent.tools.knowledge_retrieval_tool import KnowledgeRetrievalTool
 
 __all__ = [
     "Tool",
@@ -25,10 +27,12 @@ __all__ = [
     "ToolExecutor",
     "BashTool",
     "TextEditorTool",
+    "MockTextEditorTool",
     "JSONEditTool",
     "SequentialThinkingTool",
     "TaskDoneTool",
     "CKGTool",
+    "KnowledgeRetrievalTool",
 ]
 
 tools_registry: dict[str, type[Tool]] = {
@@ -39,6 +43,8 @@ tools_registry: dict[str, type[Tool]] = {
     "task_done": TaskDoneTool,
     "quality_review": QualityReviewTool,
     "online_doc_tool": OnlineDocTool,
+    "mock_edit_tool": MockTextEditorTool,
+    "knowledge_retrieval": KnowledgeRetrievalTool,
 }
 
 if _ckg_available and CKGTool is not None:

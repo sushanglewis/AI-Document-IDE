@@ -77,4 +77,16 @@ const DialogContent = React.forwardRef<
 ))
 DialogContent.displayName = "DialogContent"
 
-export { Dialog, DialogHeader, DialogTitle, DialogDescription, DialogContent }
+const DialogFooter = React.forwardRef<
+  React.ElementRef<"div">,
+  React.ComponentPropsWithoutRef<"div">
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn("flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2", className)}
+    {...props}
+  />
+))
+DialogFooter.displayName = "DialogFooter"
+
+export { Dialog, DialogHeader, DialogTitle, DialogDescription, DialogContent, DialogFooter }

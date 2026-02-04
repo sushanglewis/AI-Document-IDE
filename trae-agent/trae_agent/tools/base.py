@@ -7,8 +7,7 @@ import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import TypeAlias
-from typing_extensions import override
+from typing_extensions import override, TypeAlias
 
 ParamSchemaValue: TypeAlias = str | list[str] | bool | dict[str, object]
 Property: TypeAlias = dict[str, ParamSchemaValue]
@@ -70,6 +69,7 @@ class ToolParameter:
     enum: list[str] | None = None
     items: dict[str, object] | None = None
     required: bool = True
+    default: object | None = None
 
 
 class Tool(ABC):

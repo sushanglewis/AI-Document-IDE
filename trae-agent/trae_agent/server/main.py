@@ -4,7 +4,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Body, WebSocket
@@ -17,6 +17,7 @@ from pydantic import BaseModel
 import yaml
 import subprocess
 import shlex
+import shutil
 import urllib.request
 import urllib.error
 import json as _json
@@ -27,13 +28,41 @@ from trae_agent.agent.agent_basics import AgentStep, AgentStepState
 from trae_agent.tools import tools_registry
 from trae_agent.tools.base import ToolCall
 from trae_agent.utils.config import Config
-from trae_agent.utils.context import config_file_var, trajectory_file_var
+from trae_agent.utils.context import config_file_var, trajectory_file_var, session_id_var
 from trae_agent.utils.lake_view import LakeView
 from trae_agent.utils.trajectory_recorder import TrajectoryRecorder
 from trae_agent.utils.llm_clients.llm_basics import LLMResponse, LLMUsage
 from trae_agent.prompt.agent_prompt import TRAE_AGENT_SYSTEM_PROMPT, DOCUMENT_AGENT_SYSTEM_PROMPT
 import openai
-from .db import SessionLocal, init_db, Prompt as PromptModel, ModelConfigStore
+from .db import SessionLocal, init_db, Prompt as PromptModel, ModelConfigStore, Tool as ToolModel, CustomTool, KnowledgeBase as KnowledgeBaseModel, ChatSession, ChatMessage
+from trae_agent.server.context_store import SessionContextStore, ParagraphContext
+from trae_agent.tools.dify_tool import DifyTool
+from trae_agent.tools.knowledge_retrieval_tool import KnowledgeRetrievalTool
+import re
+
+
+class CustomToolCreate(BaseModel):
+    name: str
+    description: str
+    api_url: str
+    api_key: str
+    request_method: str = "POST"
+    request_body_template: str
+    parameter_schema: Optional[str] = None
+    curl_example: Optional[str] = None
+    app_id: Optional[str] = None
+
+
+class CustomToolUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    api_url: Optional[str] = None
+    api_key: Optional[str] = None
+    request_method: Optional[str] = None
+    request_body_template: Optional[str] = None
+    parameter_schema: Optional[str] = None
+    curl_example: Optional[str] = None
+    app_id: Optional[str] = None
 
 
 class RunRequest(BaseModel):
@@ -86,6 +115,7 @@ class InteractiveStartRequest(BaseModel):
     enable_quality_review: Optional[bool] = None
     quality_review_rules: Optional[str] = None
     use_online_mode: Optional[bool] = None
+    tools: Optional[list[str]] = None
 
 
 class InteractiveTaskRequest(BaseModel):
@@ -121,6 +151,25 @@ class OnlineDocDetailRequest(BaseModel):
 
 # Duplicate removed
 
+
+class KnowledgeBaseCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    dataset_id: str
+    api_key: str
+    api_url: str
+    retrieval_model: Optional[Dict] = None
+
+class KnowledgeBaseUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    dataset_id: Optional[str] = None
+    api_key: Optional[str] = None
+    api_url: Optional[str] = None
+    retrieval_model: Optional[Dict] = None
+
+class KnowledgeRetrieveRequest(BaseModel):
+    query: str
 
 app = FastAPI(title="Trae Agent API", version="0.1.0")
 _sessions: dict[str, Agent] = {}
@@ -195,6 +244,40 @@ def health_post():
 @app.on_event("startup")
 def on_startup():
     init_db()
+    db = SessionLocal()
+    try:
+        # Default Chinese names mapping
+        defaults = {
+            "bash": "终端",
+            "str_replace_based_edit_tool": "文本编辑",
+            "json_edit_tool": "JSON编辑",
+            "sequentialthinking": "顺序思考",
+            "task_done": "任务完成",
+            "quality_review": "质量审查",
+            "online_doc_tool": "在线文档",
+            "mock_edit_tool": "模拟编辑",
+            "ckg": "代码知识图谱"
+        }
+        
+        for name in tools_registry:
+            # Get tool instance name if possible, otherwise use registry key
+            try:
+                tool_instance = tools_registry[name]()
+                tool_name = tool_instance.name
+            except:
+                tool_name = name
+                
+            # Check if exists
+            existing = db.query(ToolModel).filter(ToolModel.name == tool_name).first()
+            if not existing:
+                zh_name = defaults.get(tool_name) or defaults.get(name) or tool_name
+                new_tool = ToolModel(name=tool_name, initial_name_zh=zh_name, custom_name=zh_name)
+                db.add(new_tool)
+        db.commit()
+    except Exception as e:
+        print(f"Error initializing tools: {e}")
+    finally:
+        db.close()
 
 
 @app.get("/openapi/apifox-trae-agent.yaml")
@@ -216,19 +299,321 @@ def get_prompt(name: str = Query(...)):
     raise HTTPException(status_code=400, detail="Unknown prompt name")
 
 
-
-
-
 @app.get("/agent/tools")
 def list_tools():
+    db = SessionLocal()
     res = []
-    for name in tools_registry:
-        try:
-            tool = tools_registry[name]()
-            res.append({"name": tool.name, "description": tool.description})
-        except Exception as e:
-            res.append({"name": name, "description": f"Error loading: {e}"})
+    try:
+        # List standard tools
+        tool_map = {t.name: t for t in db.query(ToolModel).all()}
+        
+        seen_names = set()
+        for name in tools_registry:
+            try:
+                tool = tools_registry[name]()
+                tool_name = tool.name
+                if tool_name in seen_names:
+                    continue
+                seen_names.add(tool_name)
+                
+                tool_db = tool_map.get(tool_name)
+                custom_name = tool_db.custom_name if tool_db else tool_name
+                initial_name = tool_db.initial_name_zh if tool_db else tool_name
+                
+                res.append({
+                    "name": tool_name,
+                    "description": tool.description,
+                    "custom_name": custom_name,
+                    "initial_name_zh": initial_name,
+                    "is_custom": False
+                })
+            except Exception as e:
+                res.append({"name": name, "description": f"Error loading: {e}", "is_custom": False})
+
+        # List custom tools
+        custom_tools = db.query(CustomTool).all()
+        for ct in custom_tools:
+            res.append({
+                "id": ct.id,
+                "name": ct.name,
+                "description": ct.description,
+                "api_url": ct.api_url,
+                "api_key": ct.api_key,
+                "request_method": ct.request_method,
+                "request_body_template": ct.request_body_template,
+                "parameter_schema": ct.parameter_schema,
+                "curl_example": ct.curl_example,
+                "is_custom": True,
+                "custom_name": ct.name,  # For compatibility
+                "initial_name_zh": ct.name # For compatibility
+            })
+    finally:
+        db.close()
     return {"tools": res}
+
+
+@app.get("/api/custom-tools")
+def list_custom_tools():
+    db = SessionLocal()
+    try:
+        tools = db.query(CustomTool).all()
+        return [
+            {
+                "id": t.id,
+                "name": t.name,
+                "description": t.description,
+                "api_url": t.api_url,
+                "api_key": t.api_key,
+                "request_method": t.request_method,
+                "request_body_template": t.request_body_template,
+                "parameter_schema": t.parameter_schema,
+                "curl_example": t.curl_example,
+                "app_id": t.app_id,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+                "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+            }
+            for t in tools
+        ]
+    finally:
+        db.close()
+
+
+@app.post("/api/custom-tools")
+def create_custom_tool(tool: CustomToolCreate):
+    db = SessionLocal()
+    try:
+        existing = db.query(CustomTool).filter(CustomTool.name == tool.name).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Tool with this name already exists")
+        
+        new_tool = CustomTool(
+            name=tool.name,
+            description=tool.description,
+            api_url=tool.api_url,
+            api_key=tool.api_key,
+            request_method=tool.request_method,
+            request_body_template=tool.request_body_template,
+            parameter_schema=tool.parameter_schema,
+            curl_example=tool.curl_example,
+            app_id=tool.app_id
+        )
+        db.add(new_tool)
+        db.commit()
+        db.refresh(new_tool)
+        return {"id": new_tool.id, "name": new_tool.name}
+    finally:
+        db.close()
+
+
+@app.put("/api/custom-tools/{tool_id}")
+def update_custom_tool(tool_id: int, tool: CustomToolUpdate):
+    db = SessionLocal()
+    try:
+        db_tool = db.query(CustomTool).filter(CustomTool.id == tool_id).first()
+        if not db_tool:
+            raise HTTPException(status_code=404, detail="Tool not found")
+        
+        if tool.name is not None:
+            # Check name uniqueness if changed
+            if tool.name != db_tool.name:
+                existing = db.query(CustomTool).filter(CustomTool.name == tool.name).first()
+                if existing:
+                    raise HTTPException(status_code=400, detail="Tool with this name already exists")
+            db_tool.name = tool.name
+            
+        if tool.description is not None:
+            db_tool.description = tool.description
+        if tool.api_url is not None:
+            db_tool.api_url = tool.api_url
+        if tool.api_key is not None:
+            db_tool.api_key = tool.api_key
+        if tool.request_method is not None:
+            db_tool.request_method = tool.request_method
+        if tool.request_body_template is not None:
+            db_tool.request_body_template = tool.request_body_template
+        if tool.parameter_schema is not None:
+            db_tool.parameter_schema = tool.parameter_schema
+        if tool.curl_example is not None:
+            db_tool.curl_example = tool.curl_example
+        if tool.app_id is not None:
+            db_tool.app_id = tool.app_id
+            
+        db.commit()
+        return {"id": db_tool.id, "name": db_tool.name}
+    finally:
+        db.close()
+
+
+@app.delete("/api/custom-tools/{tool_id}")
+def delete_custom_tool(tool_id: int):
+    db = SessionLocal()
+    try:
+        db_tool = db.query(CustomTool).filter(CustomTool.id == tool_id).first()
+        if not db_tool:
+            raise HTTPException(status_code=404, detail="Tool not found")
+        
+        db.delete(db_tool)
+        db.commit()
+        return {"success": True}
+    finally:
+        db.close()
+
+
+@app.get("/knowledge-bases")
+def list_knowledge_bases():
+    db = SessionLocal()
+    try:
+        kbs = db.query(KnowledgeBaseModel).all()
+        return [
+            {
+                "id": k.id,
+                "name": k.name,
+                "description": k.description,
+                "dataset_id": k.dataset_id,
+                "api_key": k.api_key,
+                "api_url": k.api_url,
+                "retrieval_model": k.retrieval_model,
+                "created_at": k.created_at.isoformat() if k.created_at else None,
+                "updated_at": k.updated_at.isoformat() if k.updated_at else None,
+            }
+            for k in kbs
+        ]
+    finally:
+        db.close()
+
+@app.post("/knowledge-bases")
+def create_knowledge_base(kb: KnowledgeBaseCreate):
+    db = SessionLocal()
+    try:
+        existing = db.query(KnowledgeBaseModel).filter(KnowledgeBaseModel.name == kb.name).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Knowledge Base with this name already exists")
+        
+        new_kb = KnowledgeBaseModel(
+            name=kb.name,
+            description=kb.description,
+            dataset_id=kb.dataset_id,
+            api_key=kb.api_key,
+            api_url=kb.api_url,
+            retrieval_model=kb.retrieval_model
+        )
+        db.add(new_kb)
+        db.commit()
+        db.refresh(new_kb)
+        return {"id": new_kb.id, "name": new_kb.name}
+    finally:
+        db.close()
+
+@app.put("/knowledge-bases/{kb_id}")
+def update_knowledge_base(kb_id: int, kb: KnowledgeBaseUpdate):
+    db = SessionLocal()
+    try:
+        db_kb = db.query(KnowledgeBaseModel).filter(KnowledgeBaseModel.id == kb_id).first()
+        if not db_kb:
+            raise HTTPException(status_code=404, detail="Knowledge Base not found")
+        
+        if kb.name is not None:
+            if kb.name != db_kb.name:
+                existing = db.query(KnowledgeBaseModel).filter(KnowledgeBaseModel.name == kb.name).first()
+                if existing:
+                    raise HTTPException(status_code=400, detail="Knowledge Base with this name already exists")
+            db_kb.name = kb.name
+            
+        if kb.description is not None:
+            db_kb.description = kb.description
+        if kb.dataset_id is not None:
+            db_kb.dataset_id = kb.dataset_id
+        if kb.api_key is not None:
+            db_kb.api_key = kb.api_key
+        if kb.api_url is not None:
+            db_kb.api_url = kb.api_url
+        if kb.retrieval_model is not None:
+            db_kb.retrieval_model = kb.retrieval_model
+            
+        db.commit()
+        return {"id": db_kb.id, "name": db_kb.name}
+    finally:
+        db.close()
+
+@app.delete("/knowledge-bases/{kb_id}")
+def delete_knowledge_base(kb_id: int):
+    db = SessionLocal()
+    try:
+        db_kb = db.query(KnowledgeBaseModel).filter(KnowledgeBaseModel.id == kb_id).first()
+        if not db_kb:
+            raise HTTPException(status_code=404, detail="Knowledge Base not found")
+        
+        db.delete(db_kb)
+        db.commit()
+        return {"success": True}
+    finally:
+        db.close()
+
+@app.post("/knowledge-bases/{kb_id}/retrieve")
+async def test_knowledge_retrieval(kb_id: int, req: KnowledgeRetrieveRequest):
+    loop = asyncio.get_running_loop()
+    
+    def get_kb_info():
+        db = SessionLocal()
+        try:
+            db_kb = db.query(KnowledgeBaseModel).filter(KnowledgeBaseModel.id == kb_id).first()
+            if not db_kb:
+                return None
+            # Return dict to avoid session issues
+            return {
+                "api_url": db_kb.api_url,
+                "api_key": db_kb.api_key,
+                "dataset_id": db_kb.dataset_id,
+                "retrieval_model": db_kb.retrieval_model
+            }
+        finally:
+            db.close()
+
+    kb_info = await loop.run_in_executor(None, get_kb_info)
+    
+    if not kb_info:
+        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+    
+    tool = KnowledgeRetrievalTool(
+        api_url=kb_info["api_url"],
+        api_key=kb_info["api_key"],
+        dataset_id=kb_info["dataset_id"],
+        retrieval_model=kb_info["retrieval_model"]
+    )
+    
+    # Execute tool directly
+    args = {
+        "query": req.query,
+        "dataset_id": kb_info["dataset_id"],
+        "api_key": kb_info["api_key"],
+        "api_url": kb_info["api_url"],
+        "retrieval_model": kb_info["retrieval_model"]
+    }
+    
+    result = await tool.execute(args)
+    
+    if result.error:
+            raise HTTPException(status_code=result.error_code or 500, detail=result.error)
+            
+    return {"result": result.output}
+
+
+class ToolConfigUpdate(BaseModel):
+    name: str
+    custom_name: str
+
+@app.post("/agent/tools/config")
+def update_tool_config(payload: ToolConfigUpdate):
+    db = SessionLocal()
+    try:
+        tool = db.query(ToolModel).filter(ToolModel.name == payload.name).first()
+        if not tool:
+            raise HTTPException(status_code=404, detail="Tool not found")
+        tool.custom_name = payload.custom_name
+        db.commit()
+        return {"status": "ok", "custom_name": tool.custom_name}
+    finally:
+        db.close()
 
 
 @app.get("/agent/config")
@@ -296,9 +681,13 @@ def online_docs_search(req: OnlineDocsSearchRequest):
             detail = e.read().decode("utf-8")
         except Exception:
             detail = str(e)
-        raise HTTPException(status_code=e.code, detail=detail)
+        # Return empty list for UI stability instead of error
+        print(f"Online Docs Search Failed (HTTP {e.code}): {detail}")
+        return {"items": []}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Return empty list for UI stability instead of error
+        print(f"Online Docs Search Failed: {e}")
+        return {"items": []}
 
 
 @app.post("/online/docs/detail")
@@ -326,6 +715,27 @@ def online_doc_detail(req: OnlineDocDetailRequest):
 def online_doc_create(payload: dict):
     base = _get_online_base_url()
     url = f"{base}/ai/report/add"
+    data = _json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    r = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(r, timeout=10) as resp:
+            body = resp.read().decode("utf-8")
+            return _json.loads(body)
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8")
+        except Exception:
+            detail = str(e)
+        raise HTTPException(status_code=e.code, detail=detail)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/online/report/edit")
+def online_doc_edit(payload: dict):
+    base = _get_online_base_url()
+    url = f"{base}/ai/report/edit"
     data = _json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     r = urllib.request.Request(url, data=data, headers=headers, method="POST")
@@ -476,7 +886,25 @@ async def run_agent(
     }
 
  
-async def _ws_run(websocket: WebSocket, agent: Agent, task: str, task_args: dict[str, str]):
+def _save_message(session_id: str, role: str, content: str, meta: dict = None):
+    if not session_id:
+        return
+    db = SessionLocal()
+    try:
+        msg = ChatMessage(session_id=session_id, role=role, content=content, meta=meta)
+        db.add(msg)
+        db.commit()
+    except Exception as e:
+        print(f"Error saving message: {e}")
+    finally:
+        db.close()
+
+async def _ws_run(websocket: WebSocket, agent: Agent, task: str, task_args: dict[str, str], config: Config | None = None, session_id: str | None = None):
+    # Save user message
+    if session_id:
+        _save_message(session_id, "user", task)
+
+    run_id = uuid4().hex[:8]
     run_task = asyncio.create_task(agent.run(task, task_args))
     last_emitted_step = 0
     working_dir = task_args.get("project_path")
@@ -501,9 +929,20 @@ async def _ws_run(websocket: WebSocket, agent: Agent, task: str, task_args: dict
     async def _safe_send(payload: dict) -> bool:
         nonlocal client_open
         try:
+            # Intercept bubbles to save to DB
+            if payload.get("type") == "bubble" and session_id:
+                data = payload.get("data", {})
+                _save_message(
+                    session_id, 
+                    data.get("role", "agent"), 
+                    data.get("content", ""), 
+                    meta=data
+                )
+                
             await websocket.send_json(payload)
             return True
-        except Exception:
+        except Exception as e:
+            print(f"DEBUG: _safe_send failed: {e}")
             client_open = False
             return False
 
@@ -519,6 +958,19 @@ async def _ws_run(websocket: WebSocket, agent: Agent, task: str, task_args: dict
     last_step_payloads = {}
     sent_bubble_ids: set[str] = set()
     task_done_bubble_sent: bool = False
+    processed_tool_call_ids: set[str] = set()
+    
+    # === Initialize LakeView ===
+    lakeview = None
+    try:
+        if agent.agent_config.enable_lakeview:
+            # Prefer passed config, fallback to agent's implied config context if possible
+            lv_config = config.lakeview if config else None
+            lakeview = LakeView(lv_config)
+    except Exception:
+        pass
+    # ===========================
+
     last_llm_interactions_count: int = 0
     try:
         while True:
@@ -538,7 +990,7 @@ async def _ws_run(websocket: WebSocket, agent: Agent, task: str, task_args: dict
                         content = (resp.get("content") or "").strip()
                         ts = str(inter.get("timestamp") or datetime.now().isoformat())
                         if content:
-                            bid = f"llm-{i+1}"
+                            bid = f"llm-{i+1}-{run_id}"
                             if bid not in sent_bubble_ids:
                                 await _safe_send({
                                     "type": "bubble",
@@ -559,10 +1011,9 @@ async def _ws_run(websocket: WebSocket, agent: Agent, task: str, task_args: dict
             if new_steps < last_emitted_step:
                 continue
 
-            start_sn = last_emitted_step + 1
-            if new_steps == last_emitted_step and new_steps > 0:
-                # Re-emit the last step as it might have changed
-                start_sn = new_steps
+            start_sn = last_emitted_step
+            if start_sn < 1:
+                start_sn = 1
 
             for sn in range(start_sn, new_steps + 1):
                 idx = sn - 1
@@ -573,6 +1024,121 @@ async def _ws_run(websocket: WebSocket, agent: Agent, task: str, task_args: dict
                 usage = lr.get("usage") if lr else None
                 tool_calls = s.get("tool_calls") or [] if s else []
                 tool_results = s.get("tool_results") or [] if s else []
+                
+                # Map call_id to tool name
+                call_id_map = {}
+                for tc in tool_calls:
+                    cid = tc.get("call_id") or tc.get("id")
+                    if cid:
+                        call_id_map[cid] = tc.get("name")
+
+                # Intercept mock_edit_tool results and send as direct WS messages
+                for tr in tool_results:
+                    tr_call_id = tr.get("call_id") or tr.get("id")
+                    if tr_call_id and tr_call_id in processed_tool_call_ids:
+                        continue
+                    
+                    tool_name = tr.get("name")
+                    if not tool_name and tr_call_id:
+                        tool_name = call_id_map.get(tr_call_id)
+
+                    print(f"DEBUG: Tool result: {tool_name} success={tr.get('success')} error={tr.get('error')}")
+                    if tool_name == "mock_edit_tool" and tr.get("success"):
+                        try:
+                            result_str = tr.get("result", "").strip()
+                            # Check if it's XML format
+                            if result_str.startswith("<start>") or result_str.startswith("<diff>"):
+                                # Parse XML
+                                start_match = re.search(r"<start>(\d+)</start>", result_str)
+                                end_match = re.search(r"<end>(\d+)</end>", result_str)
+                                new_str_match = re.search(r"<new_str>([\s\S]*?)</new_str>", result_str)
+                                old_str_match = re.search(r"<old_str>([\s\S]*?)</old_str>", result_str)
+                                
+                                if start_match and end_match:
+                                    res_json = {
+                                        "type": "str_replace",
+                                        "start": int(start_match.group(1)),
+                                        "end": int(end_match.group(1)),
+                                        "new_str": new_str_match.group(1) if new_str_match else "",
+                                        "old_str": old_str_match.group(1) if old_str_match else "",
+                                        "task_id": str(uuid4())
+                                    }
+                                    await _safe_send(res_json)
+                                    if tr_call_id: processed_tool_call_ids.add(tr_call_id)
+                            else:
+                                # Try JSON
+                                res_json = _json.loads(result_str)
+                                if isinstance(res_json, dict) and res_json.get("type") == "str_replace":
+                                    await _safe_send(res_json)
+                                    if tr_call_id: processed_tool_call_ids.add(tr_call_id)
+                        except Exception as e:
+                            print(f"DEBUG: Error processing mock_edit_tool result: {e}")
+                            pass
+
+                    if tool_name == "json_edit_tool" and tr.get("success"):
+                        try:
+                            res_json = _json.loads(tr.get("result"))
+                            if isinstance(res_json, dict) and res_json.get("type") == "diff":
+                                await _safe_send(res_json)
+                                if tr_call_id: processed_tool_call_ids.add(tr_call_id)
+                        except Exception:
+                            pass
+
+                    # Intercept str_replace_based_edit_tool for real file operations
+                    if tool_name == "str_replace_based_edit_tool" and tr.get("success"):
+                        # Find arguments
+                        args = {}
+                        for tc in tool_calls:
+                            if (tc.get("call_id") or tc.get("id")) == tr_call_id:
+                                args = tc.get("arguments") or {}
+                                if isinstance(args, str):
+                                    try: args = _json.loads(args)
+                                    except: pass
+                                break
+                        
+                        path = args.get("path")
+                        command = args.get("command")
+                        # Only commands that modify file: create, str_replace, insert
+                        if path and command in ["create", "str_replace", "insert"]:
+                             # Auto-add to git to avoid "??" status and ensure diff availability
+                             try:
+                                 print(f"DEBUG: Auto-adding {path} to git")
+                                 run_git_command(working_dir, ["add", path])
+                             except Exception as e:
+                                 print(f"DEBUG: Failed to auto-add {path} to git: {e}")
+
+                             # Send WS event
+                             print(f"DEBUG: Sending file_changed for {path}")
+                             await _safe_send({
+                                 "type": "file_changed",
+                                 "data": {
+                                     "path": path,
+                                     "timestamp": datetime.now().isoformat()
+                                 }
+                             })
+                             # We don't add to processed_tool_call_ids so it still shows up as a step if needed, 
+                             # or we can add it if we want to hide it? 
+                             # Usually we don't hide it.
+
+                    if tool_name == "sequentialthinking" and tr.get("success"):
+                        try:
+                            print(f"DEBUG: Intercepted sequentialthinking result: {tr.get('result')}")
+                            res_json = _json.loads(tr.get("result"))
+                            if isinstance(res_json, dict) and "bubbles" in res_json:
+                                bubbles = res_json["bubbles"]
+                                print(f"DEBUG: Found bubbles: {len(bubbles)}")
+                                if isinstance(bubbles, list):
+                                    for b in bubbles:
+                                        if "id" in b:
+                                            b["id"] = f"{b['id']}-{run_id}"
+                                        print(f"DEBUG: Sending bubble: {b}")
+                                        await _safe_send({"type": "bubble", "data": b})
+                                        await asyncio.sleep(0.5)
+                                if tr_call_id: processed_tool_call_ids.add(tr_call_id)
+                        except Exception as e:
+                            print(f"DEBUG: Error processing sequentialthinking result: {e}")
+                            pass
+
                 content = (lr.get("content") if lr else None) or ""
                 content_excerpt = content[:400] if isinstance(content, str) else None
                 lr_tool_calls = None
@@ -582,7 +1148,7 @@ async def _ws_run(websocket: WebSocket, agent: Agent, task: str, task_args: dict
                     lr_tool_calls = None
                 state_val = s.get("state") if s else None
                 
-                # --- Construct Payload ---
+                # --- Construct Payload (Preserved for Step Sync) ---
                 payload = {
                     "steps_count": new_steps,
                     "step_number": s.get("step_number") if s else None,
@@ -655,7 +1221,7 @@ async def _ws_run(websocket: WebSocket, agent: Agent, task: str, task_args: dict
                     ),
                 }
                 
-                # --- Message Units ---
+                # --- Message Units (Legacy, possibly used by frontend) ---
                 try:
                     mus: list[dict] = []
                     refl = s.get("reflection")
@@ -684,156 +1250,87 @@ async def _ws_run(websocket: WebSocket, agent: Agent, task: str, task_args: dict
                 # --- Send Step ---
                 await _safe_send({"type": "step", "data": payload})
                 
-                # --- Send Bubbles (Toasts) ---
-                try:
-                    sn_int = int(s.get("step_number") or 0)
-                except Exception:
-                    sn_int = 0
-                
-                try:
-                    # 1. Content (Thinking)
-                    if isinstance(content, str) and content.strip() != "":
-                        is_done = bool(state_val and state_val.lower() != 'thinking')
-                        formatted_think = f"🧠 sequentialthinking {sn_int}：{content.strip()}"
-                        if is_done:
-                            formatted_think += " ✅"
-                        bid = f"seq-{sn_int}"
-                        if bid not in sent_bubble_ids:
-                            await _safe_send({
-                                "type": "bubble",
-                                "data": {
-                                    "id": bid,
-                                    "role": "agent",
-                                    "content": formatted_think,
-                                    "timestamp": datetime.now().isoformat(),
-                                },
-                            })
-                            sent_bubble_ids.add(bid)
-                    
-                    # 2. Reflection
-                    refl = s.get("reflection")
-                    if isinstance(refl, str) and refl.strip() != "":
-                        is_done = bool(state_val and state_val.lower() != 'thinking')
-                        formatted_refl = f"🧠 sequentialthinking {sn_int}：{refl.strip()}"
-                        if is_done:
-                            formatted_refl += " ✅"
-                        bid = f"seq-reflect-{sn_int}"
-                        if bid not in sent_bubble_ids:
-                            await _safe_send({
-                                "type": "bubble",
-                                "data": {
-                                    "id": bid,
-                                    "role": "agent",
-                                    "content": formatted_refl,
-                                    "timestamp": datetime.now().isoformat(),
-                                },
-                            })
-                            sent_bubble_ids.add(bid)
+                # === Unified Bubble Generation ===
+                bubble_id = f"step-{sn}-{run_id}"
+                if bubble_id in sent_bubble_ids:
+                     # Skip if already sent (assuming LakeView summary doesn't change after step completion)
+                     # But wait, step might update from thinking -> tool call -> tool result.
+                     # LakeView usually runs when step is complete.
+                     # If we want to support updates, we shouldn't skip.
+                     # However, LakeView generation is expensive.
+                     # Let's assume for now we only send bubble once per step or when payload changes.
+                     # Since we are inside the 'payload changed' block (lines 675-680 check), we SHOULD update the bubble.
+                     # But sent_bubble_ids prevents re-sending.
+                     # I will remove the sent_bubble_ids check for the bubble updates, OR use a versioned ID.
+                     # Actually, standard bubbles usually are upserted.
+                     pass
 
-                    # 3. Tool Calls (merged with results)
-                    merged_tool_calls = []
-                    _seen = set()
-                    for _src in [(lr_tool_calls or []), (tool_calls or [])]:
-                        for _tc in _src:
-                            _cid = str(_tc.get("call_id") or f"{sn}_{_tc.get('name', '')}")
-                            if _cid in _seen:
-                                continue
-                            _seen.add(_cid)
-                            merged_tool_calls.append(_tc)
-                    for tc in merged_tool_calls:
-                        cid = str(tc.get("call_id") or f"{sn}_{tc.get('name', '')}")
-                        tool_name = tc.get('name', '')
-                        args = tc.get("arguments")
-                        
-                        # Default formatting
-                        arg_str = ""
-                        try:
-                            arg_str = json.dumps(args, ensure_ascii=False)
-                        except:
-                            arg_str = str(args)
-                        
-                        content_tc = f"🔧{tool_name} {arg_str}".strip()
-                        if tool_name == 'task_done':
-                            content_tc = "🧠总结中……"
-
-                        # CKG Optimization
-                        if tool_name == 'ckg':
-                            # Parse args if string
-                            local_args = args
-                            if isinstance(local_args, str):
-                                try:
-                                    local_args = json.loads(local_args)
-                                except:
-                                    pass
-                            
-                            if isinstance(local_args, dict):
-                                cmd = local_args.get('command')
-                                ident = local_args.get('identifier')
-                                if cmd and ident:
-                                    content_tc = f"🔧ckg {cmd}: {ident}"
-                        
-                        # Check result
-                        res = next((tr for tr in tool_results if str(tr.get("call_id")) == cid), None)
-                        if res:
-                            success = bool(res.get("success"))
-                            content_tc += " ✅" if success else " ❌"
-                        
-                        bid = f"tc-{sn}-{cid}"
-                        if bid not in sent_bubble_ids:
-                            await _safe_send({
-                                "type": "bubble",
-                                "data": {
-                                    "id": bid,
-                                    "role": "agent",
-                                    "content": content_tc,
-                                    "timestamp": datetime.now().isoformat(),
-                                    "call_id": cid,
-                                },
-                            })
-                            sent_bubble_ids.add(bid)
-                        
-                    # 4. Tool Results (Suppressed as merged above)
-                    # 5. Task Done Summary Bubble
+                bubble_payload = None
+                if lakeview:
+                    # LakeView Mode
                     try:
-                        td = next((tr for tr in tool_results if str(tr.get("name")) == "task_done"), None)
-                        if td:
-                            success_td = bool(td.get("success"))
-                            if not success_td:
-                                err_msg = str(td.get("error") or "").strip()
-                                if err_msg:
-                                    await _safe_send({
-                                        "type": "bubble",
-                                        "data": {
-                                            "id": f"taskdone-{sn}-error",
-                                            "role": "error",
-                                            "content": err_msg,
-                                            "timestamp": datetime.now().isoformat(),
-                                        },
-                                    })
-                            else:
-                                lakeview_summary = s.get("lakeview_summary") if s else None
-                                if lakeview_summary:
-                                    summary_text = str(td.get("result") or td.get("summary") or "").strip()
-                                    summary_text = (summary_text + "\n\n" + str(lakeview_summary)).strip()
-                                    if summary_text:
-                                        clipped = summary_text if len(summary_text) <= 1200 else (summary_text[:1200] + "\n<response clipped>")
-                                        bid = f"taskdone-{sn}"
-                                        if bid not in sent_bubble_ids:
-                                            await _safe_send({
-                                                "type": "bubble",
-                                                "data": {
-                                                    "id": bid,
-                                                    "role": "agent",
-                                                    "content": clipped,
-                                                    "timestamp": datetime.now().isoformat(),
-                                                },
-                                            })
-                                            sent_bubble_ids.add(bid)
-                                            task_done_bubble_sent = True
+                        lv_step = await lakeview.create_lakeview_step_from_dict(s)
+                        if lv_step:
+                             bubble_payload = {
+                                "id": bubble_id,
+                                "role": "agent",
+                                "emoji": lv_step.tags_emoji,
+                                "title": lv_step.desc_task,
+                                "content": lv_step.desc_details,
+                                "timestamp": s.get("timestamp") or datetime.now().isoformat(),
+                                "status": "success" if not s.get("error") else "error"
+                             }
                     except Exception:
                         pass
+                
+                if not bubble_payload:
+                    # Fallback Mode
+                    thought = content
+                    tcs_names = [t.get('name') for t in tool_calls]
+                    if thought or tcs_names:
+                        bubble_payload = {
+                            "id": bubble_id,
+                            "role": "agent",
+                            "emoji": "🤖",
+                            "title": f"Step {sn}",
+                            "content": f"{thought}\n\nTools: {tcs_names}" if tcs_names else thought,
+                            "timestamp": s.get("timestamp") or datetime.now().isoformat(),
+                            "status": "success" if not s.get("error") else "error"
+                        }
+
+                if bubble_payload:
+                    await _safe_send({
+                        "type": "bubble",
+                        "data": bubble_payload
+                    })
+                    sent_bubble_ids.add(bubble_id)
+
+                # 5. Task Done Summary Bubble (Preserved but adapted)
+                # If LakeView is enabled, the final step usually contains the report.
+                # But we might want a distinct "Done" bubble.
+                try:
+                    td = next((tr for tr in tool_results if str(tr.get("name")) == "task_done"), None)
+                    if td:
+                        if not bool(td.get("success")):
+                            err_msg = str(td.get("error") or "").strip()
+                            if err_msg:
+                                await _safe_send({
+                                    "type": "bubble",
+                                    "data": {
+                                        "id": f"taskdone-{sn}-error-{run_id}",
+                                        "role": "error",
+                                        "content": err_msg,
+                                        "timestamp": datetime.now().isoformat(),
+                                    },
+                                })
+                        # Success case is handled by standard step bubble usually, 
+                        # but if we want a special "Task Done" summary from tool result:
+                        elif not lakeview: # Only if lakeview didn't handle it?
+                            # Or maybe we still want the task done output specifically.
+                            pass
                 except Exception:
                     pass
+                
             last_emitted_step = new_steps
         execution = await run_task
     except Exception as e:
@@ -847,24 +1344,59 @@ async def _ws_run(websocket: WebSocket, agent: Agent, task: str, task_args: dict
         with contextlib.suppress(Exception):
             _traj_event_hub.unsubscribe(agent.trajectory_file, q)
     final_result = execution.final_result
+    print(f"DEBUG: Task finished. Success: {execution.success}, Final Result: {bool(final_result)}")
+    
+    # Fallback: if execution finished but no final_result in object, try to find last tool result
+    if not final_result:
+        try:
+            last_step = execution.steps[-1]
+            # Check if last step was task_done
+            for tr in last_step.tool_calls:
+                if tr.get("name") == "task_done":
+                    # Find result
+                    res = next((r for r in last_step.tool_results if r.get("name") == "task_done"), None)
+                    if res and res.get("success"):
+                        # task_done usually returns nothing or confirmation, 
+                        # but the 'final_result' logic in Agent execution should have captured it.
+                        # If not, we might want to check LakeView summary or just say "Task Completed".
+                        final_result = "Task Completed"
+        except Exception:
+            pass
+
     try:
-        if not task_done_bubble_sent and isinstance(final_result, str) and final_result.strip() != "":
-            sn = len(execution.steps)
-            clipped = final_result if len(final_result) <= 1200 else (final_result[:1200] + "\n<response clipped>")
-            bid = f"taskdone-{sn}"
-            if bid not in sent_bubble_ids:
-                await _safe_send({
-                    "type": "bubble",
-                    "data": {
-                        "id": bid,
-                        "role": "agent",
-                        "content": clipped,
-                        "timestamp": datetime.now().isoformat(),
-                    },
-                })
-                sent_bubble_ids.add(bid)
-                task_done_bubble_sent = True
-    except Exception:
+        # Final result bubble if not covered
+        # User requested to recover this logic
+        if isinstance(final_result, str) and final_result.strip() != "":
+             print("DEBUG: Sending final result bubble")
+             await _safe_send({
+                "type": "bubble",
+                "data": {
+                    "id": f"final-result-{uuid4().hex[:8]}",
+                    "role": "agent",
+                    "emoji": "🏁",
+                    "title": "任务完成",
+                    "content": final_result,
+                    "timestamp": datetime.now().isoformat(),
+                    "status": "success"
+                }
+             })
+        elif execution.success:
+             print("DEBUG: Sending completion bubble (no text)")
+             # Even if no text result, send a completion bubble to ensure UI updates
+             await _safe_send({
+                "type": "bubble",
+                "data": {
+                    "id": f"final-result-{uuid4().hex[:8]}",
+                    "role": "agent",
+                    "emoji": "🏁",
+                    "title": "任务完成",
+                    "content": "任务已成功完成。",
+                    "timestamp": datetime.now().isoformat(),
+                    "status": "success"
+                }
+             })
+    except Exception as e:
+        print(f"DEBUG: Error sending final bubble: {e}")
         pass
     payload = {
         "trajectory_file": traj_out,
@@ -875,8 +1407,12 @@ async def _ws_run(websocket: WebSocket, agent: Agent, task: str, task_args: dict
         "execution_time": execution.execution_time,
         "steps_count": len(execution.steps),
     }
+    print("DEBUG: Sending completed message")
     await _safe_send({"type": "completed", "data": payload})
     await _safe_send({"type": "end", "data": "done"})
+    
+    # Wait a bit to ensure messages are flushed before closing connection
+    await asyncio.sleep(0.5)
 
 @app.websocket("/ws/agent/run/stream")
 async def ws_run_stream(websocket: WebSocket):
@@ -1068,13 +1604,52 @@ def interactive_start(
     if docker_config is not None:
         docker_config["workspace_dir"] = working_dir
 
+    # Prepare tools (separate standard vs custom)
+    custom_tools_instances = []
     try:
-        if bool(getattr(req, "use_online_mode", False)) and config and config.trae_agent:
-            base_tools = list(config.trae_agent.tools or [])
-            if "online_doc_tool" not in base_tools:
-                base_tools.append("online_doc_tool")
-            config.trae_agent.tools = base_tools
-    except Exception:
+        # Determine the full list of requested tools
+        desired_tools = []
+        if req.tools:
+            desired_tools = list(req.tools)
+        elif config and config.trae_agent and config.trae_agent.tools:
+            desired_tools = list(config.trae_agent.tools)
+        
+        # Ensure online_doc_tool if requested
+        if bool(getattr(req, "use_online_mode", False)):
+            if "online_doc_tool" not in desired_tools:
+                desired_tools.append("online_doc_tool")
+        
+        # Load custom tools from DB to check against desired_tools
+        db = SessionLocal()
+        try:
+            db_custom_map = {t.name: t for t in db.query(CustomTool).all()}
+        finally:
+            db.close()
+            
+        final_standard_tools = []
+        
+        for t_name in desired_tools:
+            if t_name in db_custom_map:
+                # It is a custom tool
+                ct = db_custom_map[t_name]
+                # Get provider for DifyTool
+                prov = None
+                if config and config.trae_agent and config.trae_agent.model and config.trae_agent.model.model_provider:
+                    prov = config.trae_agent.model.model_provider.provider
+                custom_tools_instances.append(DifyTool(ct, model_provider=prov))
+            elif t_name in tools_registry:
+                # It is a standard tool
+                final_standard_tools.append(t_name)
+            else:
+                print(f"Warning: Tool '{t_name}' not found in DB or registry. Skipping.")
+                
+        # Update config with only standard tools so Agent doesn't crash on unknown tools
+        if config and config.trae_agent:
+            config.trae_agent.tools = final_standard_tools
+            
+    except Exception as e:
+        print(f"Error preparing tools: {e}")
+        # Fallback: if error, just proceed with config as is, though it might fail later
         pass
 
     agent = Agent(
@@ -1084,6 +1659,7 @@ def interactive_start(
         None,
         docker_config=docker_config,
         docker_keep=bool(req.docker_keep),
+        custom_tools=custom_tools_instances
     )
     # Sync environment for tools that rely on env-based model configuration
     try:
@@ -1131,7 +1707,21 @@ def interactive_start(
             agent.agent.set_system_prompt(prompt_val)
     _sessions[session_id] = agent
     _session_configs[session_id] = config
-    _session_configs[session_id] = config
+    
+    # Create persistent session record
+    db = SessionLocal()
+    try:
+        # Check if exists (re-start case)
+        exists = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+        if not exists:
+            db_session = ChatSession(id=session_id, title="New Session")
+            db.add(db_session)
+            db.commit()
+    except Exception as e:
+        print(f"Error creating DB session: {e}")
+    finally:
+        db.close()
+        
     traj_out = agent.trajectory_file.replace("/workspace", working_dir) if docker_config is not None else agent.trajectory_file
     with contextlib.suppress(Exception):
         from trae_agent.utils.trajectory_recorder import TrajectoryRecorder
@@ -1317,6 +1907,7 @@ async def ws_interactive_task(websocket: WebSocket):
         await websocket.close(code=1003)
         return
     task = req.task
+
     if req.file_path:
         try:
             with open(req.file_path, "r") as f:
@@ -1398,18 +1989,22 @@ async def ws_interactive_task(websocket: WebSocket):
     cf_path = _session_config_files.get(req.session_id)
     token_cf = None
     token_traj = None
+    token_sid = None
     if cf_path:
         token_cf = config_file_var.set(cf_path)
     if getattr(agent, "trajectory_file", None):
         token_traj = trajectory_file_var.set(str(agent.trajectory_file))
-
+    token_sid = session_id_var.set(req.session_id)
+    
     try:
-        await _ws_run(websocket, agent, task, task_args)
+        await _ws_run(websocket, agent, task, task_args, config=cfg if 'cfg' in locals() else None, session_id=req.session_id)
     finally:
         if token_cf:
             config_file_var.reset(token_cf)
         if token_traj:
             trajectory_file_var.reset(token_traj)
+        if token_sid:
+            session_id_var.reset(token_sid)
 
 
 @app.get("/agent/session/{session_id}/files")
@@ -1885,6 +2480,7 @@ def interactive_close(session_id: str = Query(...)):
     if session_id not in _sessions:
         raise HTTPException(status_code=404, detail="Session not found.")
     del _sessions[session_id]
+    SessionContextStore.clear(session_id)
     return {"session_id": session_id, "closed": True}
 
 
@@ -2082,10 +2678,16 @@ def _read_file_impl(path: str, session_id: str | None = None, workspace: str | N
             raise HTTPException(status_code=403, detail="Access denied: path not under working_dir.")
         path = abs_path
     try:
+        if Path(path).is_dir():
+             # Return 400 or specific error for directory read attempt
+             raise HTTPException(status_code=400, detail="Path is a directory, not a file.")
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail="File not found.") from e
+    except UnicodeDecodeError:
+        # Binary file
+        raise HTTPException(status_code=400, detail="Binary file cannot be read as text.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read file: {e}") from e
     return {"path": path, "content": content}
@@ -2168,7 +2770,12 @@ def api_file_read(
     fp = Path(file)
     if not fp.is_absolute():
         fp = Path(workspace) / fp
-    return _read_file_impl(path=str(fp.resolve()), workspace=workspace)
+    
+    target = fp.resolve()
+    if target.is_dir():
+        raise HTTPException(status_code=400, detail="Target is a directory, not a file.")
+    
+    return _read_file_impl(path=str(target), workspace=workspace)
 
 
 class FileWriteRequest(BaseModel):
@@ -2189,6 +2796,41 @@ def api_file_write(
             f.write(req.content)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to write file: {e}") from e
+    return {"success": True}
+
+
+@app.delete("/api/file")
+def api_file_delete(
+    workspace: str = Query(...),
+    file: str = Query(...),
+):
+    if not Path(workspace).is_absolute():
+        raise HTTPException(status_code=400, detail="workspace must be absolute.")
+    fp = Path(file)
+    if not fp.is_absolute():
+        fp = Path(workspace) / fp
+    
+    target = fp.resolve()
+    
+    # Security check: ensure target is within workspace
+    try:
+        common = os.path.commonpath([str(target), str(Path(workspace).resolve())])
+        if common != str(Path(workspace).resolve()):
+             raise HTTPException(status_code=403, detail="Access denied: path not under working_dir.")
+    except Exception:
+        raise HTTPException(status_code=403, detail="Access denied: path check failed.")
+
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File or directory not found.")
+
+    try:
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete: {e}") from e
+    
     return {"success": True}
 
 
@@ -2298,6 +2940,42 @@ def serve_openapi_yaml():
     spec = app.openapi()
     text = yaml.safe_dump(spec, allow_unicode=True, sort_keys=False)
     return Response(text, media_type="application/yaml")
+
+@app.get("/api/sessions")
+def list_sessions():
+    db = SessionLocal()
+    try:
+        sessions = db.query(ChatSession).order_by(ChatSession.updated_at.desc()).all()
+        return [
+            {
+                "id": s.id,
+                "title": s.title,
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+                "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+            }
+            for s in sessions
+        ]
+    finally:
+        db.close()
+
+
+@app.get("/api/sessions/{session_id}/messages")
+def get_session_messages(session_id: str):
+    db = SessionLocal()
+    try:
+        messages = db.query(ChatMessage).filter(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at.asc()).all()
+        return [
+            {
+                "id": m.id,
+                "role": m.role,
+                "content": m.content,
+                "meta": m.meta,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
+            for m in messages
+        ]
+    finally:
+        db.close()
     @app.get("/vite.svg")
     def serve_vite_svg():
         f = WEB_ROOT / "vite.svg"
@@ -2334,6 +3012,187 @@ def test_model(
             raise HTTPException(status_code=400, detail=f"Unsupported provider: {provider}")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Connectivity failed: {e}") from e
+
+# --- Git Integration Start ---
+
+class GitInitRequest(BaseModel):
+    workspace: str
+
+class GitStatusRequest(BaseModel):
+    workspace: str
+
+class GitDiffRequest(BaseModel):
+    workspace: str
+    path: str
+    context_lines: int = 3
+    request_id: Optional[str] = None
+
+class GitShowRequest(BaseModel):
+    workspace: str
+    path: str
+    revision: str = "HEAD"
+
+class GitAddRequest(BaseModel):
+    workspace: str
+    files: list[str]
+
+class GitCommitRequest(BaseModel):
+    workspace: str
+    message: str
+
+class GitCheckoutRequest(BaseModel):
+    workspace: str
+    files: list[str]
+
+class GitResetRequest(BaseModel):
+    workspace: str
+    files: list[str]
+
+class GitLogRequest(BaseModel):
+    workspace: str
+    limit: Optional[int] = 10
+    offset: Optional[int] = 0
+
+def run_git_command(workspace: str, command: list[str], allow_diff_code: bool = False) -> str:
+    if not os.path.isdir(workspace):
+         raise HTTPException(status_code=400, detail="Workspace directory does not exist")
+    
+    try:
+        # Ensure git is run in the workspace
+        # For git diff, exit code 1 means differences found (success)
+        cmd = ["git"] + command
+        p = subprocess.run(
+            cmd,
+            cwd=workspace,
+            capture_output=True,
+            text=True
+        )
+        
+        if p.returncode == 0:
+            return p.stdout
+        
+        if allow_diff_code and p.returncode == 1:
+            return p.stdout
+            
+        raise subprocess.CalledProcessError(p.returncode, cmd, output=p.stdout.encode(), stderr=p.stderr.encode())
+    except subprocess.CalledProcessError as e:
+        # Re-raise with stderr info if available
+        detail = e.stderr.decode('utf-8') if e.stderr else e.output.decode('utf-8')
+        raise HTTPException(status_code=500, detail=f"Git command failed: {detail}")
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="Git executable not found")
+
+@app.post("/api/git/init")
+def git_init(req: GitInitRequest):
+    try:
+        run_git_command(req.workspace, ["init"])
+        # Optional: Configure user if not set
+        try:
+            run_git_command(req.workspace, ["config", "user.email"])
+        except:
+             run_git_command(req.workspace, ["config", "user.email", "agent@trae.ai"])
+             run_git_command(req.workspace, ["config", "user.name", "Trae Agent"])
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/git/status")
+def git_status(req: GitStatusRequest):
+    # Use --porcelain for parsing
+    try:
+        output = run_git_command(req.workspace, ["status", "--porcelain"])
+        # Parse output
+        # XY PATH
+        # X = Index, Y = Worktree
+        files = []
+        for line in output.splitlines():
+            if not line: continue
+            status_code = line[:2]
+            file_path = line[3:]
+            files.append({"path": file_path, "status": status_code})
+        
+        # Also get branch info
+        try:
+            branch = run_git_command(req.workspace, ["rev-parse", "--abbrev-ref", "HEAD"]).strip()
+        except:
+            branch = "HEAD (no branch)"
+
+        return {"branch": branch, "files": files}
+    except Exception as e:
+         # If not a git repo
+         if "not a git repository" in str(e).lower():
+             return {"branch": None, "files": []}
+         raise e
+
+@app.post("/api/git/diff")
+def git_diff(req: GitDiffRequest):
+    try:
+        cmd = ["diff", f"-U{req.context_lines}", "HEAD", "--", req.path]
+        output = run_git_command(req.workspace, cmd, allow_diff_code=True)
+        return {"diff": output, "request_id": req.request_id}
+    except:
+        # Maybe new file or no HEAD
+        try:
+             # For new file/no index, we still want to respect context lines if possible, 
+             # but --no-index diffing against /dev/null essentially gives the whole file.
+             # If context_lines=0, it still gives the whole file as added.
+             output = run_git_command(req.workspace, ["diff", f"-U{req.context_lines}", "--no-index", "/dev/null", req.path], allow_diff_code=True)
+             return {"diff": output, "request_id": req.request_id}
+        except:
+             return {"diff": "", "request_id": req.request_id}
+
+@app.post("/api/git/show")
+def git_show(req: GitShowRequest):
+    try:
+        output = run_git_command(req.workspace, ["show", f"{req.revision}:{req.path}"])
+        return {"content": output}
+    except:
+        return {"content": ""}
+
+@app.post("/api/git/add")
+def git_add(req: GitAddRequest):
+    run_git_command(req.workspace, ["add"] + req.files)
+    return {"success": True}
+
+@app.post("/api/git/commit")
+def git_commit(req: GitCommitRequest):
+    run_git_command(req.workspace, ["commit", "-m", req.message])
+    return {"success": True}
+
+@app.post("/api/git/checkout")
+def git_checkout(req: GitCheckoutRequest):
+    run_git_command(req.workspace, ["checkout", "--"] + req.files)
+    return {"success": True}
+
+@app.post("/api/git/reset")
+def git_reset(req: GitResetRequest):
+    run_git_command(req.workspace, ["reset", "HEAD", "--"] + req.files)
+    return {"success": True}
+    
+@app.post("/api/git/log")
+def git_log(req: GitLogRequest):
+    # Format: hash|author|date|message
+    limit = req.limit or 10
+    offset = req.offset or 0
+    cmd = ["log", f"-n {limit}", f"--skip={offset}", "--pretty=format:%H|%an|%ad|%s"]
+    try:
+        output = run_git_command(req.workspace, cmd)
+        commits = []
+        for line in output.splitlines():
+            parts = line.split("|", 3)
+            if len(parts) == 4:
+                commits.append({
+                    "hash": parts[0],
+                    "author": parts[1],
+                    "date": parts[2],
+                    "message": parts[3]
+                })
+        return {"commits": commits}
+    except:
+        return {"commits": []}
+
+# --- Git Integration End ---
+
 class PromptDeleteRequest(BaseModel):
     name: str
 

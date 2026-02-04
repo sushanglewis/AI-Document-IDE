@@ -64,7 +64,7 @@ class DockerToolExecutor:
         results = []
         for tool_call in tool_calls:
             if tool_call.name in self._docker_tools_set:
-                result = self._execute_in_docker(tool_call)
+                result = await self._execute_in_docker(tool_call)
             else:
                 # Execute locally
                 result_list = await self._original_executor.sequential_tool_call([tool_call])
@@ -79,7 +79,7 @@ class DockerToolExecutor:
         # )
         return await self.sequential_tool_call(tool_calls)
 
-    def _execute_in_docker(self, tool_call: ToolCall) -> ToolResult:
+    async def _execute_in_docker(self, tool_call: ToolCall) -> ToolResult:
         """
         Builds and executes a command inside the Docker container,
         with path translation.
@@ -152,7 +152,7 @@ class DockerToolExecutor:
                 )
 
             # Execute the final built command
-            exit_code, output = self._docker_manager.execute(command_to_run)
+            exit_code, output = await self._docker_manager.execute(command_to_run)
             return ToolResult(
                 call_id=tool_call.call_id,
                 name=tool_call.name,

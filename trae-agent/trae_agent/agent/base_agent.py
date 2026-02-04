@@ -29,12 +29,17 @@ class BaseAgent(ABC):
     _tool_caller: Union[ToolExecutor, DockerToolExecutor]
 
     def __init__(
-        self, agent_config: AgentConfig, docker_config: dict | None = None, docker_keep: bool = True
+        self,
+        agent_config: AgentConfig,
+        docker_config: dict | None = None,
+        docker_keep: bool = True,
+        custom_tools: list[Tool] | None = None,
     ):
         """Initialize the agent.
         Args:
             agent_config: Configuration object containing model parameters and other settings.
             docker_config: Configuration for running in a Docker environment.
+            custom_tools: Optional list of custom tools to add to the agent.
         """
         self._llm_client = LLMClient(agent_config.model)
         self._model_config = agent_config.model
@@ -45,6 +50,8 @@ class BaseAgent(ABC):
             tools_registry[tool_name](model_provider=self._model_config.model_provider.provider)
             for tool_name in agent_config.tools
         ]
+        if custom_tools:
+            self._tools.extend(custom_tools)
 
         # Inject LLM Client into tools that need it
         for tool in self._tools:
@@ -181,7 +188,7 @@ class BaseAgent(ABC):
         import time
 
         if self.docker_manager:
-            self.docker_manager.start()
+            await self.docker_manager.start()
 
         start_time = time.time()
         execution = AgentExecution(task=self._task, steps=[])
@@ -227,7 +234,7 @@ class BaseAgent(ABC):
 
         finally:
             if self.docker_manager and not self.docker_keep:
-                self.docker_manager.stop()
+                await self.docker_manager.stop()
 
         # Ensure tool resources are released whether an exception occurs or not.
         await self._close_tools()
@@ -298,13 +305,20 @@ class BaseAgent(ABC):
         if len(tool_results) == 0:
             return None
 
-        reflection = "\n".join(
-            f"The tool execution failed with error: {tool_result.error}. Consider trying a different approach or fixing the parameters."
-            for tool_result in tool_results
-            if not tool_result.success
-        )
+        reflections = []
+        for tool_result in tool_results:
+            if not tool_result.success:
+                reflections.append(
+                    f"The tool execution failed with error: {tool_result.error}. "
+                    "Consider trying a different approach or fixing the parameters."
+                )
+            elif tool_result.name == "knowledge_retrieval":
+                reflections.append(f"Knowledge retrieval successful. Result: {tool_result.result}")
 
-        return reflection
+        if not reflections:
+            return None
+
+        return "\n".join(reflections)
 
     def llm_indicates_task_completed(self, llm_response: LLMResponse) -> bool:
         """Check if the LLM indicates that the task is completed. Override for custom logic."""

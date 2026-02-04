@@ -1,4 +1,4 @@
-FROM node:18-slim AS web
+FROM mirror.gcr.io/library/node:18-slim AS web
 WORKDIR /web
 COPY ai-ide/ /web/
 RUN npm install && npm run build
@@ -6,7 +6,7 @@ RUN npm install && npm run build
 FROM python:3.12-slim AS backend
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y curl git && rm -rf /var/lib/apt/lists/*
 RUN curl -Ls https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 WORKDIR /app

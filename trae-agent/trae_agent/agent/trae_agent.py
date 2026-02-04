@@ -40,6 +40,7 @@ class TraeAgent(BaseAgent):
         trae_agent_config: TraeAgentConfig,
         docker_config: dict | None = None,
         docker_keep: bool = True,
+        custom_tools: list[Tool] | None = None,
     ):
         """Initialize TraeAgent.
 
@@ -64,11 +65,18 @@ class TraeAgent(BaseAgent):
         self.mcp_clients: list[MCPClient] = []  # Keep track of MCP clients for cleanup
         self.docker_config = docker_config
         super().__init__(
-            agent_config=trae_agent_config, docker_config=docker_config, docker_keep=docker_keep
+            agent_config=trae_agent_config,
+            docker_config=docker_config,
+            docker_keep=docker_keep,
+            custom_tools=custom_tools,
         )
         self._system_prompt_override: str | None = None
         self.enable_quality_review: bool = False
         self.quality_review_rules: str | None = None
+        
+        # Context Store for Paragraph Capsules
+        # Map: paragraph_id -> {path, start, end, content}
+        self._paragraph_context_store: dict[str, dict] = {}
 
     async def initialise_mcp(self):
         """Async factory to create and initialize TraeAgent."""
@@ -118,15 +126,23 @@ class TraeAgent(BaseAgent):
     ):
         """Create a new task."""
         self._task: str = task
+        
+        # Parse and store paragraph context from task
+        self._parse_paragraph_context(task)
 
         if tool_names is None and len(self._tools) == 0:
             tool_names = TraeAgentToolNames
 
             # Get the model provider from the LLM client
             provider = self._model_config.model_provider.provider
-            self._tools: list[Tool] = [
-                tools_registry[tool_name](model_provider=provider) for tool_name in tool_names
-            ]
+            self._tools: list[Tool] = []
+            for tool_name in tool_names:
+                tool_cls = tools_registry[tool_name]
+                tool_instance = tool_cls(model_provider=provider)
+                # Inject paragraph context store if the tool supports it (e.g. EditTool)
+                if hasattr(tool_instance, "set_context_store"):
+                    tool_instance.set_context_store(self._paragraph_context_store)
+                self._tools.append(tool_instance)
         # self._tool_caller: ToolExecutor = ToolExecutor(self._tools)
 
         self._initial_messages: list[LLMMessage] = []
@@ -165,6 +181,38 @@ class TraeAgent(BaseAgent):
                 self._trajectory_recorder.set_quality_review(
                     getattr(self, "enable_quality_review", False), getattr(self, "quality_review_rules", None)
                 )
+
+    def _parse_paragraph_context(self, task_content: str):
+        """Parse <paragraph_capsule> blocks and store metadata."""
+        import re
+        # Pattern to extract paragraph capsule content
+        # Matches: ```{type=段落} ... ``` or direct <paragraph_capsule> blocks if mixed
+        # Simplified to look for inner XML structure
+        
+        # We look for <paragraph id="...">...</paragraph>
+        # This is a naive regex parser.
+        
+        # Regex to find all paragraph tags with attributes
+        # Note: This assumes well-formed XML-like tags in the task string
+        # Update: Match 'start' and 'end' which can be empty or present
+        # <start>(\d*)</start> matches digits or empty
+        pattern = re.compile(r'<paragraph\s+id="([^"]+)"\s+path="([^"]+)">\s*<start>(\d*)</start>\s*<end>(\d*)</end>\s*<content>(.*?)</content>\s*</paragraph>', re.DOTALL)
+        
+        matches = pattern.findall(task_content)
+        for match in matches:
+            pid, path, start_str, end_str, content = match
+            
+            # Handle optional start/end
+            start = int(start_str) if start_str else None
+            end = int(end_str) if end_str else None
+            
+            self._paragraph_context_store[pid] = {
+                "path": path,
+                "start": start,
+                "end": end,
+                "content": content
+            }
+            # print(f"[TraeAgent] Stored context for paragraph {pid}: start={start}, end={end}")
 
     @override
     async def execute_task(self) -> AgentExecution:

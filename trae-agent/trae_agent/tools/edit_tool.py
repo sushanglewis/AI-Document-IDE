@@ -9,6 +9,8 @@
 #
 # This modified file is released under the same license.
 
+import json
+import uuid
 from pathlib import Path
 from typing_extensions import override
 
@@ -29,6 +31,10 @@ class TextEditorTool(Tool):
 
     def __init__(self, model_provider: str | None = None) -> None:
         super().__init__(model_provider)
+        self._context_store = {}
+
+    def set_context_store(self, store: dict):
+        self._context_store = store
 
     @override
     def get_model_provider(self) -> str | None:
@@ -47,9 +53,13 @@ class TextEditorTool(Tool):
 * If a `command` generates a long output, it will be truncated and marked with `<response clipped>`
 
 Notes for using the `str_replace` command:
-* The `old_str` parameter should match EXACTLY one or more consecutive lines from the original file. Be mindful of whitespaces!
-* If the `old_str` parameter is not unique in the file, the replacement will not be performed. Make sure to include enough context in `old_str` to make it unique
-* The `new_str` parameter should contain the edited lines that should replace the `old_str`
+* The `str_replace` command is the MOST ROBUST and PREFERRED method for modifying existing files (including replacements, insertions, and deletions).
+* The `old_str` parameter must match EXACTLY one or more consecutive lines from the original file. Be mindful of whitespaces!
+* If the `old_str` parameter is not unique in the file, the replacement will not be performed. Include enough context in `old_str` to make it unique.
+* Usage strategies:
+  - REPLACE: Set `old_str` to the original content and `new_str` to the new content.
+  - DELETE: Set `old_str` to the content you want to remove and set `new_str` to an empty string.
+  - INSERT: Find a unique anchor string (context) in the file. Set `old_str` to this anchor. Set `new_str` to `anchor + new_content` (to insert after) or `new_content + anchor` (to insert before).
 """
 
     @override
@@ -97,16 +107,35 @@ Notes for using the `str_replace` command:
             ),
         ]
 
+    def _sanitize_arg(self, val):
+        if isinstance(val, str):
+            try:
+                # Heuristic: if it contains escaped unicode sequences, try to decode
+                if "\\u" in val or "\\x" in val:
+                    return val.encode('utf-8').decode('unicode_escape')
+            except Exception:
+                pass
+        return val
+
     @override
     async def execute(self, arguments: ToolCallArguments) -> ToolExecResult:
         """Execute the str_replace_editor tool."""
+        # Sanitize arguments
+        for k, v in arguments.items():
+            arguments[k] = self._sanitize_arg(v)
+
         command = str(arguments["command"]) if "command" in arguments else None
         if command is None:
             return ToolExecResult(
                 error=f"No command provided for the {self.get_name()} tool",
                 error_code=-1,
             )
-        path = str(arguments["path"]) if "path" in arguments else None
+        path = arguments.get("path")
+        if path is None:
+            path = arguments.get("file_path")
+        
+        path = str(path) if path is not None else None
+
         if path is None:
             return ToolExecResult(
                 error=f"No path provided for the {self.get_name()} tool", error_code=-1
@@ -114,20 +143,19 @@ Notes for using the `str_replace` command:
         _path = Path(path)
         try:
             self.validate_path(command, _path)
-            match command:
-                case "view":
-                    return await self._view_handler(arguments, _path)
-                case "create":
-                    return self._create_handler(arguments, _path)
-                case "str_replace":
-                    return self._str_replace_handler(arguments, _path)
-                case "insert":
-                    return self._insert_handler(arguments, _path)
-                case _:
-                    return ToolExecResult(
-                        error=f"Unrecognized command {command}. The allowed commands for the {self.name} tool are: {', '.join(EditToolSubCommands)}",
-                        error_code=-1,
-                    )
+            if command == "view":
+                return await self._view_handler(arguments, _path)
+            elif command == "create":
+                return self._create_handler(arguments, _path)
+            elif command == "str_replace":
+                return self._str_replace_handler(arguments, _path)
+            elif command == "insert":
+                return self._insert_handler(arguments, _path)
+            else:
+                return ToolExecResult(
+                    error=f"Unrecognized command {command}. The allowed commands for the {self.name} tool are: {', '.join(EditToolSubCommands)}",
+                    error_code=-1,
+                )
         except ToolError as e:
             return ToolExecResult(error=str(e), error_code=-1)
 
@@ -194,69 +222,218 @@ Notes for using the `str_replace` command:
             output=self._make_output(file_content, str(path), init_line=init_line)
         )
 
-    def str_replace(self, path: Path, old_str: str, new_str: str | None) -> ToolExecResult:
+    def _build_xml_response(self, path, command, start, end, old_content, new_content):
+        xml_output = f"""```{{type=context, description=这是用户引用的文档片段}}
+<paragraph_capsule>
+  <paragraph path="{path}">
+    <command>{command}</command>
+    <content>{old_content}</content>
+    <new_content>{new_content}</new_content>
+  </paragraph>
+</paragraph_capsule>
+```"""
+        msg = {
+            "type": "str_replace",
+            "task_id": str(uuid.uuid4()),
+            "xml_content": xml_output,
+            "old_str": old_content,
+            "new_str": new_content,
+            "start": start,
+            "end": end
+        }
+        return ToolExecResult(output=json.dumps(msg))
+
+    def str_replace(self, path: Path, old_str: str, new_str: str | None, start_line: int | None = None, end_line: int | None = None) -> ToolExecResult:
         import re
+        
         file_content = self.read_file(path).expandtabs()
         old_str = old_str.expandtabs()
         new_str = new_str.expandtabs() if new_str is not None else ""
+        
+        actual_old_str = old_str
 
         if new_str.strip() == old_str.strip():
             raise ToolError("new_str内容不可相同于old_str")
 
-        exact_index = file_content.find(old_str)
-        if exact_index != -1:
-            if file_content.count(old_str) > 1:
-                file_content_lines = file_content.split("\n")
-                lines = [idx + 1 for idx, line in enumerate(file_content_lines) if old_str in line]
-                raise ToolError(
-                    f"No replacement was performed. Multiple occurrences of old_str `{old_str}` in lines {lines}. Please ensure it is unique"
-                )
+        # Strategy A: Exact Match
+        occurrences = file_content.count(old_str)
+        if occurrences == 1:
+            # Unique match found
             new_file_content = file_content.replace(old_str, new_str)
+            exact_index = file_content.find(old_str)
             replacement_line = file_content[:exact_index].count("\n")
+        elif occurrences > 1:
+            # If paragraph_id is used, we should ideally have unique content.
+            # If not, we assume the content provided is sufficient context.
+            # But wait, if the LLM didn't provide start/end, and content is duplicated, we are stuck.
+            # However, if we retrieved old_str from the Context Store, it SHOULD be the exact chunk we want.
+            # BUT the file might contain duplicates of that chunk.
+            # In that case, without start_line/end_line, we can't disambiguate.
+            # User Requirement: "Use string matching... ensure fault tolerance...".
+            # If paragraph_id gives us the content, and it appears multiple times, we might pick the first one or fail.
+            # Since user removed start/end from capsule, we have no position info.
+            # BUT, if the tool inferred old_str from paragraph_id, maybe we can also infer position?
+            # The ParagraphContext DOES NOT have start/end (I removed it from main.py parsing logic).
+            # Wait, I removed start/end parsing in main.py, but the user said "Remove start/end from capsule".
+            # So the context store only has CONTENT.
+            # If content is duplicated, we have ambiguity.
+            # Let's try to match the first occurrence for now, or use fuzzy match if exact fails.
+            
+            if start_line is not None:
+                # Existing disambiguation logic...
+                indices = [m.start() for m in re.finditer(re.escape(old_str), file_content)]
+                lines = [file_content[:idx].count("\n") + 1 for idx in indices]
+                
+                closest_line_diff = float('inf')
+                best_index = -1
+                
+                for idx, line_num in zip(indices, lines):
+                    diff = abs(line_num - start_line)
+                    if diff < closest_line_diff:
+                        closest_line_diff = diff
+                        best_index = idx
+                
+                if best_index != -1:
+                     new_file_content = file_content[:best_index] + new_str + file_content[best_index + len(old_str):]
+                     replacement_line = file_content[:best_index].count("\n")
+                else:
+                    raise ToolError(f"Multiple occurrences of old_str found, but failed to select one near line {start_line}.")
+            else:
+                # Fallback: Replace the FIRST occurrence if no line info provided
+                # This is risky but consistent with "Context Store has content".
+                # If the content is large enough (paragraph), uniqueness is likely.
+                print(f"Warning: Multiple occurrences of old_str found ({occurrences}), replacing the first one as no start_line provided.")
+                new_file_content = file_content.replace(old_str, new_str, 1)
+                exact_index = file_content.find(old_str)
+                replacement_line = file_content[:exact_index].count("\n")
+
         else:
-            def _flex_regex(s: str) -> str:
-                parts: list[str] = []
-                i = 0
-                while i < len(s):
-                    ch = s[i]
-                    if ch.isspace():
-                        j = i + 1
-                        while j < len(s) and s[j].isspace():
-                            j += 1
-                        parts.append(r"\s+")
-                        i = j
+            # occurrences == 0
+            # Strategy B: Fallback with Line Numbers (if provided) or Fuzzy Match
+            # ... existing fallback logic ...
+            if start_line is not None and end_line is not None:
+                file_lines = file_content.split("\n")
+                # Extract lines from file (convert 1-based to 0-based)
+                # Ensure indices are within bounds
+                s_idx = max(0, start_line - 1)
+                e_idx = min(len(file_lines), end_line)
+                
+                target_lines = file_lines[s_idx:e_idx]
+                target_text = "\n".join(target_lines)
+                
+                # Compare normalized (strip whitespace)
+                def normalize(s): return "".join(s.split())
+                
+                if normalize(target_text) == normalize(old_str):
+                    # Match found via loose comparison
+                    # Replace the lines
+                    
+                    # Construct new content
+                    pre_content = "\n".join(file_lines[:s_idx])
+                    post_content = "\n".join(file_lines[e_idx:])
+                    
+                    # Handle joining carefully to preserve newlines of surrounding
+                    if s_idx > 0: pre_content += "\n"
+                    # post_content will be joined with \n if it's not empty
+                    
+                    new_file_content = pre_content + new_str + ("\n" + post_content if post_content else "")
+                    
+                    replacement_line = s_idx
+                    actual_old_str = target_text
+                else:
+                     # Last resort: Super loose fallback if text is long enough
+                     if len(old_str) > 20: # Only for substantial content
+                         norm_file = normalize(file_content)
+                         norm_old = normalize(old_str)
+                         if norm_old in norm_file:
+                             # Found it! But where?
+                             # Mapping back is hard. We can try to locate using regex with aggressive whitespace
+                             # Or we just trust the line numbers if the content is somewhat similar?
+                             # Let's assume line numbers are roughly correct if content similarity is high.
+                             # Calculate similarity ratio
+                             from difflib import SequenceMatcher
+                             ratio = SequenceMatcher(None, target_text, old_str).ratio()
+                             if ratio > 0.8: # 80% similar
+                                 # Assume this is the block
+                                 pre_content = "\n".join(file_lines[:s_idx])
+                                 post_content = "\n".join(file_lines[e_idx:])
+                                 if s_idx > 0: pre_content += "\n"
+                                 new_file_content = pre_content + new_str + ("\n" + post_content if post_content else "")
+                                 replacement_line = s_idx
+                                 actual_old_str = target_text
+                             else:
+                                 raise ToolError(f"No replacement performed. old_str not found exact match. Fallback to lines {start_line}-{end_line} failed (content mismatch, similarity={ratio:.2f}).\nFile content at lines:\n{target_text}\nWanted:\n{old_str}")
+                         else:
+                             raise ToolError(f"No replacement performed. old_str not found exact match. Fallback to lines {start_line}-{end_line} failed (content mismatch).\nFile content at lines:\n{target_text}\nWanted:\n{old_str}")
+                     else:
+                         raise ToolError(f"No replacement performed. old_str not found exact match. Fallback to lines {start_line}-{end_line} failed (content mismatch).\nFile content at lines:\n{target_text}\nWanted:\n{old_str}")
+            else:
+                # Try regex fuzzy match as last resort (existing logic)
+                def _flex_regex(s: str) -> str:
+                    parts: list[str] = []
+                    i = 0
+                    while i < len(s):
+                        ch = s[i]
+                        if ch.isspace():
+                            j = i + 1
+                            while j < len(s) and s[j].isspace():
+                                j += 1
+                            parts.append(r"\s+")
+                            i = j
+                        else:
+                            parts.append(re.escape(ch))
+                            i += 1
+                    return "".join(parts)
+    
+                pattern = _flex_regex(old_str)
+                matches = list(re.finditer(pattern, file_content, flags=re.DOTALL))
+                if len(matches) == 0:
+                    raise ToolError(
+                        f"No replacement was performed, old_str `{old_str}` did not appear verbatim or with whitespace variations in {path}."
+                    )
+                if len(matches) > 1:
+                    # Use start_line for regex matches too if available
+                    if start_line is not None:
+                        positions = [m.start() for m in matches]
+                        lines = [file_content[:pos].count("\n") + 1 for pos in positions]
+                         # Find closest
+                        closest_diff = float('inf')
+                        best_m = None
+                        for m, line_num in zip(matches, lines):
+                            diff = abs(line_num - start_line)
+                            if diff < closest_diff:
+                                closest_diff = diff
+                                best_m = m
+                        
+                        start, end = best_m.span()
+                        new_file_content = file_content[:start] + new_str + file_content[end:]
+                        replacement_line = file_content[:start].count("\n")
+                        actual_old_str = best_m.group(0)
                     else:
-                        parts.append(re.escape(ch))
-                        i += 1
-                return "".join(parts)
-
-            pattern = _flex_regex(old_str)
-            matches = list(re.finditer(pattern, file_content, flags=re.DOTALL))
-            if len(matches) == 0:
-                raise ToolError(
-                    f"No replacement was performed, old_str `{old_str}` did not appear verbatim or with whitespace variations in {path}."
-                )
-            if len(matches) > 1:
-                file_content_lines = file_content.split("\n")
-                positions = [m.start() for m in matches]
-                lines = [file_content[:pos].count("\n") + 1 for pos in positions]
-                raise ToolError(
-                    f"No replacement was performed. Multiple approximate occurrences of old_str `{old_str}` in lines {lines}. Please ensure it is unique"
-                )
-            m = matches[0]
-            start, end = m.span()
-            new_file_content = file_content[:start] + new_str + file_content[end:]
-            replacement_line = file_content[:start].count("\n")
-
-        start_line = max(0, replacement_line - SNIPPET_LINES)
-        end_line = replacement_line + SNIPPET_LINES + new_str.count("\n")
-        snippet = "\n".join(new_file_content.split("\n")[start_line : end_line + 1])
+                        file_content_lines = file_content.split("\n")
+                        positions = [m.start() for m in matches]
+                        lines = [file_content[:pos].count("\n") + 1 for pos in positions]
+                        raise ToolError(
+                            f"No replacement was performed. Multiple approximate occurrences of old_str `{old_str}` in lines {lines}. Please ensure it is unique"
+                        )
+                else:
+                    m = matches[0]
+                    start, end = m.span()
+                    new_file_content = file_content[:start] + new_str + file_content[end:]
+                    replacement_line = file_content[:start].count("\n")
+                    actual_old_str = m.group(0)
 
         self.write_file(path, new_file_content)
-        success_msg = f"The file {path} has been edited. "
-        success_msg += self._make_output(snippet, f"a snippet of {path}", start_line + 1)
-        success_msg += "Review the changes and make sure they are as expected. Edit the file again if necessary."
-        return ToolExecResult(output=success_msg)
+        
+        # Calculate actual start and end lines for the XML response
+        final_start = replacement_line + 1
+        final_end = replacement_line + actual_old_str.count("\n") + 1
+        
+        command = "replace"
+        if not new_str and old_str:
+            command = "delete"
+        
+        return self._build_xml_response(path, command, final_start, final_end, actual_old_str, new_str)
 
     def _insert(self, path: Path, insert_line: int, new_str: str) -> ToolExecResult:
         """Implement the insert command, which inserts new_str at the specified line in the file content."""
@@ -284,17 +461,8 @@ Notes for using the `str_replace` command:
         snippet = "\n".join(snippet_lines)
 
         self.write_file(path, new_file_text)
-
-        success_msg = f"The file {path} has been edited. "
-        success_msg += self._make_output(
-            snippet,
-            "a snippet of the edited file",
-            max(1, insert_line - SNIPPET_LINES + 1),
-        )
-        success_msg += "Review the changes and make sure they are as expected (correct indentation, no duplicate lines, etc). Edit the file again if necessary."
-        return ToolExecResult(
-            output=success_msg,
-        )
+        
+        return self._build_xml_response(path, "insert", insert_line, insert_line, "", new_str)
 
     # Note: undo_edit method is not implemented in this version as it was removed
 
@@ -354,18 +522,28 @@ Notes for using the `str_replace` command:
 
     def _str_replace_handler(self, arguments: ToolCallArguments, _path: Path) -> ToolExecResult:
         old_str = arguments.get("old_str") if "old_str" in arguments else None
+        start_line = None
+        end_line = None
+        
         if not isinstance(old_str, str):
             return ToolExecResult(
                 error="Parameter `old_str` is required and should be a string for command: str_replace",
                 error_code=-1,
             )
+            
         new_str = arguments.get("new_str") if "new_str" in arguments else None
         if not (new_str is None or isinstance(new_str, str)):
             return ToolExecResult(
                 error="Parameter `new_str` should be a string or null for command: str_replace",
                 error_code=-1,
             )
-        return self.str_replace(_path, old_str, new_str)
+            
+        if start_line is None:
+            start_line = arguments.get("start_line")
+        if end_line is None:
+            end_line = arguments.get("end_line")
+        
+        return self.str_replace(_path, old_str, new_str, start_line, end_line)
 
     def _insert_handler(self, arguments: ToolCallArguments, _path: Path) -> ToolExecResult:
         insert_line = arguments.get("insert_line") if "insert_line" in arguments else None

@@ -50,9 +50,21 @@ class MCPTool(Tool):
         try:
             output = await self.client.call_tool(self.get_name(), arguments)
             if output.isError:
-                return ToolExecResult(output=None, error=output.content[0].text)
+                content = ""
+                if output.content and isinstance(output.content, list) and len(output.content) > 0:
+                    if hasattr(output.content[0], 'text'):
+                        content = output.content[0].text
+                    else:
+                        content = str(output.content[0])
+                return ToolExecResult(output=None, error=content)
             else:
-                return ToolExecResult(output=output.content[0].text)
+                content = ""
+                if output.content and isinstance(output.content, list) and len(output.content) > 0:
+                    if hasattr(output.content[0], 'text'):
+                        content = output.content[0].text
+                    else:
+                        content = str(output.content[0])
+                return ToolExecResult(output=content)
 
         except Exception as e:
             return ToolExecResult(error=f"Error running mcp tool: {e}", error_code=-1)

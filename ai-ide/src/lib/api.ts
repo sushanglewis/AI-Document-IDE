@@ -67,6 +67,9 @@ export interface InteractiveStartRequest {
   enable_quality_review?: boolean;
   quality_review_rules?: string;
   use_online_mode?: boolean;
+  enable_lakeview?: boolean;
+  lakeview_url?: string;
+  tools?: string[];
 }
 
 export interface InteractiveTaskRequest {
@@ -253,6 +256,12 @@ class ApiClient {
     await this.client.post('/api/file', {
       file: absFile,
       content
+    });
+  }
+
+  async deleteFile(workspace: string, file: string): Promise<void> {
+    await this.client.delete('/api/file', {
+      params: { workspace, file }
     });
   }
 
@@ -451,16 +460,62 @@ class ApiClient {
   }
 
 
-  async getAvailableTools(): Promise<{ tools: Array<{ name: string; description: string }> }> {
+  async getAvailableTools(): Promise<{ tools: Array<{ name: string; description: string; custom_name?: string; initial_name_zh?: string }> }> {
     const response = await this.client.get('/agent/tools');
     return response.data;
   }
 
+  async updateToolConfig(name: string, custom_name: string): Promise<{ status: string; custom_name: string }> {
+    const response = await this.client.post('/agent/tools/config', { name, custom_name });
+    return response.data;
+  }
+
   async closeInteractiveSession(sessionId: string): Promise<{ session_id: string; closed: boolean }> {
-    const response = await this.client.post('/agent/interactive/close', undefined, {
+    const response = await this.client.post('/agent/interactive/close', null, {
       params: { session_id: sessionId }
     });
     return response.data;
+  }
+
+  // Git Integration
+  async gitInit(workspace: string): Promise<void> {
+    await this.client.post('/api/git/init', { workspace });
+  }
+
+  async gitStatus(workspace: string): Promise<{ branch: string; files: Array<{ path: string; status: string }> }> {
+    const res = await this.client.post('/api/git/status', { workspace });
+    return res.data;
+  }
+
+  async gitDiff(workspace: string, path: string, contextLines = 3, requestId?: string): Promise<{ diff: string; request_id?: string }> {
+    const res = await this.client.post('/api/git/diff', { workspace, path, context_lines: contextLines, request_id: requestId });
+    return res.data;
+  }
+
+  async gitShow(workspace: string, path: string, revision: string = "HEAD"): Promise<{ content: string }> {
+    const res = await this.client.post('/api/git/show', { workspace, path, revision });
+    return res.data;
+  }
+
+  async gitAdd(workspace: string, files: string[]): Promise<void> {
+    await this.client.post('/api/git/add', { workspace, files });
+  }
+
+  async gitCommit(workspace: string, message: string): Promise<void> {
+    await this.client.post('/api/git/commit', { workspace, message });
+  }
+
+  async gitCheckout(workspace: string, files: string[]): Promise<void> {
+    await this.client.post('/api/git/checkout', { workspace, files });
+  }
+
+  async gitReset(workspace: string, files: string[]): Promise<void> {
+    await this.client.post('/api/git/reset', { workspace, files });
+  }
+  
+  async gitLog(workspace: string, limit = 10, offset = 0): Promise<{ commits: Array<{ hash: string; author: string; date: string; message: string }> }> {
+    const res = await this.client.post('/api/git/log', { workspace, limit, offset });
+    return res.data;
   }
 
   async searchOnlineDocs(): Promise<any> {
@@ -488,11 +543,100 @@ class ApiClient {
   async createOnlineReport(params: { title: string; description?: string; userId?: string; content?: string }): Promise<any> {
     const payload = {
       title: params.title,
-      description: params.description || '',
-      userId: params.userId || 'user',
-      content: params.content || '',
+      description: params.description,
+      userId: params.userId,
+      content: params.content
     };
-    const res = await this.client.post('/online/docs/create', payload);
+    const res = await this.client.post('/online/report/create', payload);
+    return res.data;
+  }
+
+  async createCustomTool(tool: {
+    name: string;
+    description: string;
+    api_url: string;
+    api_key: string;
+    request_body_template: string;
+    parameter_schema?: string;
+    curl_example?: string;
+    app_id?: string;
+  }): Promise<{ id: number; name: string }> {
+    const response = await this.client.post('/api/custom-tools', tool);
+    return response.data;
+  }
+
+  async updateCustomTool(id: number, tool: {
+    name?: string;
+    description?: string;
+    api_url?: string;
+    api_key?: string;
+    request_body_template?: string;
+    parameter_schema?: string;
+    curl_example?: string;
+    app_id?: string;
+  }): Promise<{ id: number; name: string }> {
+    const response = await this.client.put(`/api/custom-tools/${id}`, tool);
+    return response.data;
+  }
+
+  async deleteCustomTool(id: number): Promise<{ success: boolean }> {
+    const response = await this.client.delete(`/api/custom-tools/${id}`);
+    return response.data;
+  }
+
+  // Knowledge Base Operations
+  async listKnowledgeBases(): Promise<Array<{
+    id: number;
+    name: string;
+    description?: string;
+    dataset_id: string;
+    api_key: string;
+    api_url: string;
+    created_at?: string;
+    updated_at?: string;
+  }>> {
+    const response = await this.client.get('/knowledge-bases');
+    return response.data;
+  }
+
+  async createKnowledgeBase(kb: {
+    name: string;
+    description?: string;
+    dataset_id: string;
+    api_key: string;
+    api_url: string;
+  }): Promise<{ id: number; name: string }> {
+    const response = await this.client.post('/knowledge-bases', kb);
+    return response.data;
+  }
+
+  async updateKnowledgeBase(id: number, kb: {
+    name?: string;
+    description?: string;
+    dataset_id?: string;
+    api_key?: string;
+    api_url?: string;
+  }): Promise<{ id: number; name: string }> {
+    const response = await this.client.put(`/knowledge-bases/${id}`, kb);
+    return response.data;
+  }
+
+  async deleteKnowledgeBase(id: number): Promise<{ success: boolean }> {
+    const response = await this.client.delete(`/knowledge-bases/${id}`);
+    return response.data;
+  }
+
+  async testKnowledgeRetrieval(id: number, query: string): Promise<{ result: string }> {
+    const response = await this.client.post(`/knowledge-bases/${id}/retrieve`, { query });
+    return response.data;
+  }
+
+  async updateOnlineDoc(params: { documentId: string; content: string }): Promise<any> {
+    const payload = {
+      document_id: params.documentId,
+      content: params.content
+    };
+    const res = await this.client.post('/online/report/edit', payload);
     return res.data;
   }
 
@@ -516,6 +660,15 @@ class ApiClient {
       params: { session_id: sessionId || undefined, relative_path: relativePath, workspace },
       headers: { 'Content-Type': 'multipart/form-data' },
     });
+    return response.data;
+  }
+  async getSessionMessages(sessionId: string): Promise<any[]> {
+    const response = await this.client.get(`/api/sessions/${sessionId}/messages`);
+    return response.data;
+  }
+
+  async listSessions(): Promise<any[]> {
+    const response = await this.client.get('/api/sessions');
     return response.data;
   }
 }

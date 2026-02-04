@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { cn } from '../lib/utils';
 import { AgentStep } from '../lib/api';
+import { FileText } from 'lucide-react';
 
 interface StreamingConsoleProps {
   className?: string;
@@ -112,9 +113,32 @@ export const StreamingConsole: React.FC<StreamingConsoleProps> = ({
                     )}
                     {toolResults.length > 0 && (
                       <div className="mt-2 text-xs space-y-1">
-                        {toolResults.map((r: any, idx: number) => (
-                          <div key={idx}>{r.success ? '✅' : '❌'} {r.result || r.error || ''}</div>
-                        ))}
+                        {toolResults.map((r: any, idx: number) => {
+                          let capsule = null;
+                          try {
+                             const resStr = r.result || '';
+                             if (typeof resStr === 'string' && resStr.includes('paragraph_capsule')) {
+                                const parsed = JSON.parse(resStr);
+                                if (parsed.xml_content) {
+                                     const xml = parsed.xml_content;
+                                     const pathMatch = xml.match(/path="([^"]+)"/);
+                                     const path = pathMatch ? pathMatch[1] : 'Unknown';
+                                     capsule = (
+                                        <div key={idx} className="mt-1">
+                                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-500/10 border border-blue-500/20 text-blue-600 dark:text-blue-400 text-xs font-medium select-none">
+                                                <FileText className="w-3.5 h-3.5" />
+                                                <span>{path.split('/').pop()}</span>
+                                                <span className="opacity-50 text-[10px] ml-1">引用片段</span>
+                                            </div>
+                                        </div>
+                                     );
+                                }
+                             }
+                          } catch (e) {}
+
+                          if (capsule) return capsule;
+                          return <div key={idx}>{r.success ? '✅' : '❌'} {r.result || r.error || ''}</div>
+                        })}
                       </div>
                     )}
                   </div>
@@ -143,11 +167,53 @@ export const StreamingConsole: React.FC<StreamingConsoleProps> = ({
                   "inline-block max-w-[80%] rounded-2xl px-3 py-2 text-[14px] border",
                   item.type === 'user' ? "bg-primary/10 border-border" :
                   item.type === 'error' ? "bg-destructive/10 text-destructive border-destructive/20" :
-                  item.type === 'system' ? "bg-muted/50 text-muted-foreground border-border" : "bg-muted border-border"
+                  item.type === 'system' ? "bg-muted/50 text-muted-foreground border-border dark:bg-zinc-900 dark:text-zinc-400" : "bg-muted border-border"
                 )}>
                   {item.type === 'agent' ? (
                     <ReactMarkdown remarkPlugins={[remarkGfm]} className="prose prose-sm max-w-none dark:prose-invert">{merged}</ReactMarkdown>
-                  ) : merged}
+                  ) : (
+                    <div className="whitespace-pre-wrap">
+                        {merged.split(/(```\{type=[^}]+\}[\s\S]*?```)/g).map((part, i) => {
+                            if (part.startsWith('```{type=')) {
+                                try {
+                                     const headerEndIdx = part.indexOf('}');
+                                     const header = part.substring(4, headerEndIdx + 1);
+                                     const typeMatch = header.match(/type=([^,}]+)/);
+                                     const type = typeMatch ? typeMatch[1].trim() : 'unknown';
+                                     
+                                     if (type === 'context') {
+                                         const xmlMatch = part.match(/<paragraph_capsule>([\s\S]*?)<\/paragraph_capsule>/);
+                                         if (xmlMatch) {
+                                             const xml = xmlMatch[1];
+                                             const pathMatch = xml.match(/path="([^"]+)"/);
+                                             const path = pathMatch ? pathMatch[1] : 'Context';
+                                             return (
+                                                <div key={i} className="inline-flex items-center gap-1.5 px-2.5 py-1 my-1 rounded-md bg-blue-500/10 border border-blue-500/20 text-blue-600 dark:text-blue-400 text-xs font-medium select-none">
+                                                    <FileText className="w-3.5 h-3.5" />
+                                                    <span>{path.split('/').pop()}</span>
+                                                    <span className="opacity-50 text-[10px] ml-1">引用片段</span>
+                                                </div>
+                                             );
+                                         }
+                                     }
+                                     // Handle file type if needed
+                                     if (type === 'file') {
+                                          const pathMatch = part.match(/path="([^"]+)"/);
+                                          if (pathMatch) {
+                                              return (
+                                                  <div key={i} className="inline-flex items-center gap-1.5 px-2.5 py-1 my-1 rounded-md bg-accent/50 border border-accent text-accent-foreground text-xs font-medium select-none">
+                                                      <FileText className="w-3.5 h-3.5" />
+                                                      <span>{pathMatch[1].split('/').pop()}</span>
+                                                  </div>
+                                              );
+                                          }
+                                     }
+                                } catch (e) {}
+                            }
+                            return <span key={i}>{part}</span>;
+                        })}
+                    </div>
+                  )}
                   {attachments && attachments.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1">
                       {attachments.map((a, idx) => (

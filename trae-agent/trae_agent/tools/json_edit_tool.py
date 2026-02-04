@@ -87,12 +87,64 @@ JSONPath syntax supported:
                 description="Whether to format the JSON output with proper indentation. Defaults to true.",
                 required=False,
             ),
+            ToolParameter(
+                name="id",
+                type="string",
+                description="The paragraph ID for precision editing (e.g., 'pid_xxxx'). If provided, 'file_path' and 'operation' are ignored.",
+                required=False,
+            ),
+            ToolParameter(
+                name="new_content",
+                type="string",
+                description="The new content to replace the paragraph with. Required if 'id' is provided.",
+                required=False,
+            ),
         ]
 
     @override
     async def execute(self, arguments: ToolCallArguments) -> ToolExecResult:
         """Execute the JSON edit operation."""
         try:
+            # Precision Edit Mode
+            pid = arguments.get("id")
+            if pid:
+                new_content = arguments.get("new_content")
+                if new_content is None:
+                    return ToolExecResult(error="new_content is required when id is provided", error_code=-1)
+
+                # Import context store here to avoid circular import at top level
+                try:
+                    from trae_agent.server.context_store import SessionContextStore
+                    ctx = SessionContextStore.get(pid)
+                except ImportError:
+                    ctx = None
+
+                if not ctx:
+                    return ToolExecResult(error=f"Context not found for id: {pid}", error_code=-1)
+
+                # Construct diff payload
+                diff_payload = {
+                    "type": "diff",
+                    "data": {
+                        "file_path": ctx.path,
+                        "changes": [
+                            {
+                                "id": pid,
+                                "start": ctx.start,
+                                "end": ctx.end,
+                                "original_content": ctx.original_content,
+                                "new_content": new_content
+                            }
+                        ]
+                    }
+                }
+                
+                return ToolExecResult(
+                    output=f"Generated diff for {pid}",
+                    result=json.dumps(diff_payload),
+                    success=True
+                )
+
             operation = str(arguments.get("operation", "")).lower()
             if not operation:
                 return ToolExecResult(error="Operation parameter is required", error_code=-1)

@@ -1,6 +1,8 @@
+import asyncio
 import os
 import subprocess
 import uuid
+import functools
 
 import docker
 import pexpect
@@ -42,7 +44,12 @@ class DockerManager:
         self.shell = None
         self._is_managed = True
 
-    def start(self):
+    async def start(self):
+        """Async wrapper for start."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._start_sync)
+
+    def _start_sync(self):
         """Starts/attaches to the container, mounts the workspace, copies tools, and starts the shell."""
         try:
             if self.dockerfile_path:
@@ -125,7 +132,12 @@ class DockerManager:
             print(f"[red]Failed to start DockerManager: {e}[/red]")
             raise
 
-    def execute(self, command: str, timeout: int = 300) -> tuple[int, str]:
+    async def execute(self, command: str, timeout: int = 300) -> tuple[int, str]:
+        """Async wrapper for execute."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, functools.partial(self._execute_sync, command, timeout))
+
+    def _execute_sync(self, command: str, timeout: int = 300) -> tuple[int, str]:
         """
         Executes a command using the configured mode (interactive or stateless).
         """
@@ -137,7 +149,12 @@ class DockerManager:
         # else:
         #     return self._execute_stateless(command)
 
-    def stop(self):
+    async def stop(self):
+        """Async wrapper for stop."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._stop_sync)
+
+    def _stop_sync(self):
         """Stops the pexpect shell and cleans up the container if managed by this instance."""
         if self.shell and self.shell.isalive():
             print("Closing persistent shell...")
