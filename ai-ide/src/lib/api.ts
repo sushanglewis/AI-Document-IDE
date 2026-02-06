@@ -449,6 +449,16 @@ class ApiClient {
     return res.data as { id: number; name: string; content: string; enable_review?: boolean; review_rules?: string };
   }
 
+  async saveModelConfig(config: { name: string; provider: string; model: string; base_url?: string; api_key?: string }): Promise<{ id: number; name: string }> {
+    const res = await this.client.post('/storage/model-config/write', config);
+    return res.data;
+  }
+
+  async getModelConfig(name: string): Promise<{ id: number; name: string; provider: string; model: string; base_url: string; api_key: string }> {
+    const res = await this.client.post('/storage/model-config/get', { name });
+    return res.data;
+  }
+
   async writeStoredPrompt(name: string, content: string): Promise<{ id: number; name: string }> {
     const res = await this.client.post('/storage/prompt/write', { name, content });
     return res.data as { id: number; name: string };

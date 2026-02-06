@@ -52,7 +52,8 @@ interface SettingsPageProps {
   qualityReviewRules?: string;
   onQualityReviewEnabledChange?: (enabled: boolean) => void;
   onQualityReviewRulesChange?: (rules: string) => void;
-  onTestConnectivity: () => Promise<void>;
+  onTestConnectivity: (config: ModelConfig) => Promise<boolean>;
+  onSaveModelConfig: (config: ModelConfig) => Promise<void>;
 }
 
 type SettingsTab = 'prompts' | 'model' | 'online' | 'tools';
@@ -72,6 +73,7 @@ export function SettingsPage({
   onQualityReviewEnabledChange,
   onQualityReviewRulesChange,
   onTestConnectivity,
+  onSaveModelConfig,
 }: SettingsPageProps) {
 
   const { enabledTools, setEnabledTools } = useAppStore();
@@ -383,12 +385,20 @@ export function SettingsPage({
     setIsTestingConnection(true);
     setConnectionStatus('idle');
     try {
-      await onTestConnectivity();
-      setConnectionStatus('success');
+      const success = await onTestConnectivity(modelConfig);
+      setConnectionStatus(success ? 'success' : 'error');
     } catch (e) {
       setConnectionStatus('error');
     } finally {
       setIsTestingConnection(false);
+    }
+  };
+
+  const handleSaveModel = async () => {
+    try {
+      await onSaveModelConfig(modelConfig);
+    } catch (e) {
+      // Error handling is likely done in parent or ignored if toast is shown there
     }
   };
 
@@ -617,6 +627,7 @@ export function SettingsPage({
                       { id: 'azure', label: 'Azure OpenAI' },
                       { id: 'ollama', label: 'Ollama' },
                       { id: 'openrouter', label: 'OpenRouter' },
+                      { id: 'moonshot', label: 'Moonshot' },
                     ].map(provider => (
                       <div
                         key={provider.id}
@@ -671,9 +682,17 @@ export function SettingsPage({
                   <Button 
                     onClick={handleTestConnection} 
                     disabled={isTestingConnection}
+                    variant="outline"
                     className="w-32"
                   >
                     {isTestingConnection ? '测试中...' : '测试连接'}
+                  </Button>
+
+                  <Button 
+                    onClick={handleSaveModel} 
+                    className="w-32"
+                  >
+                    保存配置
                   </Button>
                   
                   {connectionStatus === 'success' && (

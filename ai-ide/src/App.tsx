@@ -367,28 +367,36 @@ function App() {
       }
   };
 
-  const handleTestConnectivity = async () => {
+  const handleTestConnectivity = async (config?: {provider: string, model: string, apiKey: string, baseUrl?: string}) => {
+    const provider = config?.provider || selectedProvider;
+    const model = config?.model || modelName;
+    const url = config?.baseUrl || modelBaseUrl;
+    const key = config?.apiKey || apiKey;
+
     try {
       await apiClient.testModelConnectivity({
-        provider: selectedProvider,
-        model: modelName,
-        model_base_url: modelBaseUrl,
-        api_key: apiKey,
+        provider: provider,
+        model: model,
+        model_base_url: url,
+        api_key: key,
       });
       appendMessage('模型连通性测试通过');
+      return true;
     } catch (e) {
       try {
         const fallbackUrl = 'http://host.docker.internal:9997/v1';
         await apiClient.testModelConnectivity({
-          provider: selectedProvider,
-          model: modelName,
+          provider: provider,
+          model: model,
           model_base_url: fallbackUrl,
-          api_key: apiKey,
+          api_key: key,
         });
         setModelBaseUrl(fallbackUrl);
         appendMessage('模型连通性测试通过(已切换备用Base URL)');
+        return true;
       } catch {
         appendMessage('模型连通性测试失败', 'error');
+        return false;
       }
     }
   };
@@ -450,6 +458,43 @@ function App() {
       setModelBaseUrl(config.baseUrl);
     }
   };
+
+  const handleSaveModelConfig = async (config: {provider: string, model: string, apiKey: string, baseUrl?: string}) => {
+    try {
+      await apiClient.saveModelConfig({
+        name: 'default_model_config',
+        provider: config.provider,
+        model: config.model,
+        base_url: config.baseUrl || '',
+        api_key: config.apiKey
+      });
+      appendMessage('模型配置已保存');
+    } catch (e) {
+      console.error('Failed to save model config:', e);
+      appendMessage('保存模型配置失败', 'error');
+    }
+  };
+
+  // Load default model config on mount
+  useEffect(() => {
+    const loadModelConfig = async () => {
+      try {
+        const config = await apiClient.getModelConfig('default_model_config');
+        if (config) {
+          setSelectedProvider(config.provider);
+          setModelName(config.model);
+          setApiKey(config.api_key);
+          if (config.base_url) {
+            setModelBaseUrl(config.base_url);
+          }
+        }
+      } catch (e) {
+        // Ignore error if config doesn't exist yet
+        console.log('No default model config found, using defaults');
+      }
+    };
+    loadModelConfig();
+  }, []);
 
   const createNewSession = async (workspacePath?: string, onlineMode?: boolean) => {
     try {
@@ -879,6 +924,9 @@ function App() {
                        // Parse Git Diff again to get Line Numbers
                        // We will use the line numbers to calculate offsets in oldContent.
                        if (diffStr) {
+                           // Clear existing pending diffs for this file as we have a fresh state from Git
+                           useAppStore.getState().clearPendingDiffs(relPath);
+
                            const lines = diffStr.split('\n');
                            let oldLine = 0;
                            let newLine = 0;
@@ -1394,6 +1442,7 @@ function App() {
                 onQualityReviewEnabledChange={setQualityReviewEnabled}
                 onQualityReviewRulesChange={setQualityReviewRules}
                 onTestConnectivity={handleTestConnectivity}
+                onSaveModelConfig={handleSaveModelConfig}
               />
             ) : isKnowledgeRetrievalOpen && knowledgeRetrievalTarget ? (
               <KnowledgeRetrievalPanel 
